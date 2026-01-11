@@ -135,6 +135,7 @@ Slash command defining review response behavior:
 1. **Install Claude GitHub App**: https://github.com/apps/claude
 2. **Required Secrets**:
    - `ANTHROPIC_API_KEY` - Claude API key
+   - `CLAUDE_CODE_OAUTH_TOKEN` - OAuth token for Claude Code Action
 3. **Required Permissions** (in workflow files):
    - `contents: write`
    - `pull-requests: write`
