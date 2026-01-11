@@ -29,28 +29,41 @@ jobs:
             const triggerLabel = '${{ env.TRIGGER_LABEL }}';
             const eventType = context.eventName;
             const issueNumber = context.payload.issue.number;
+            const action = context.payload.action;
+
+            core.info(`Trigger label: "${triggerLabel}"`);
+            core.info(`Event type: ${eventType}`);
+            core.info(`Action: ${action}`);
+            core.info(`Issue number: ${issueNumber}`);
 
             core.setOutput('issue_number', issueNumber);
 
             // If trigger label is not set, run on issue creation
             if (!triggerLabel || triggerLabel === '') {
-              if (eventType === 'issues' && context.payload.action === 'opened') {
+              core.info(`Trigger label is empty - checking for issue creation event`);
+              if (eventType === 'issues' && action === 'opened') {
+                core.info(`✅ Running: Issue opened and no trigger label configured`);
                 core.setOutput('should_run', 'true');
               } else {
+                core.info(`❌ Skipping: Issue not opened (action: ${action})`);
                 core.setOutput('should_run', 'false');
               }
               return;
             }
 
             // If trigger label is set, only run when that label is added
-            if (eventType === 'issues' && context.payload.action === 'labeled') {
+            if (eventType === 'issues' && action === 'labeled') {
               const addedLabel = context.payload.label.name;
+              core.info(`Label added: "${addedLabel}"`);
               if (addedLabel === triggerLabel) {
+                core.info(`✅ Running: Trigger label "${triggerLabel}" was added`);
                 core.setOutput('should_run', 'true');
               } else {
+                core.info(`❌ Skipping: Label "${addedLabel}" does not match trigger label "${triggerLabel}"`);
                 core.setOutput('should_run', 'false');
               }
             } else {
+              core.info(`❌ Skipping: Event type ${eventType}/${action} does not match expected conditions`);
               core.setOutput('should_run', 'false');
             }
 

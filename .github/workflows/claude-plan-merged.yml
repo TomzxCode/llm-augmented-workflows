@@ -3,13 +3,18 @@ name: Claude Plan Merged
 on:
   pull_request:
     types: [closed]
-  branches: [main, master]
 
 permissions:
   contents: read
   pull-requests: read
   issues: write
   id-token: write
+
+env:
+  # Branch prefix for plan PRs
+  PLAN_BRANCH_PREFIX: 'plan/'
+  # Label to add to issue when plan is merged
+  APPROVAL_LABEL: 'plan-approved'
 
 jobs:
   label-issue-on-plan-merge:
@@ -24,24 +29,39 @@ jobs:
             const pr = context.payload.pull_request;
             const branchRef = pr.head.ref;
             const prTitle = pr.title;
+            const planBranchPrefix = '${{ env.PLAN_BRANCH_PREFIX }}';
 
-            // Check if branch starts with 'plan/'
-            const isPlanBranch = branchRef.startsWith('plan/');
+            core.info(`PR branch: ${branchRef}`);
+            core.info(`PR title: ${prTitle}`);
+            core.info(`Plan branch prefix: ${planBranchPrefix}`);
+
+            // Check if branch starts with configured prefix
+            const isPlanBranch = branchRef.startsWith(planBranchPrefix);
             // Check if PR title matches "Plan for issue #N" pattern
             const planIssueMatch = prTitle.match(/Plan for issue #(\d+)/i);
 
-            if (!isPlanBranch || !planIssueMatch) {
+            if (!isPlanBranch) {
+              core.info(`❌ Skipping: Branch "${branchRef}" does not start with "${planBranchPrefix}"`);
               core.setOutput('should_run', 'false');
               return;
             }
 
+            if (!planIssueMatch) {
+              core.info(`❌ Skipping: PR title "${prTitle}" does not match "Plan for issue #N" pattern`);
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            const issueNumber = planIssueMatch[1];
+            core.info(`✅ Running: This is a plan PR for issue #${issueNumber}`);
             core.setOutput('should_run', 'true');
-            core.setOutput('issue_number', planIssueMatch[1]);
+            core.setOutput('issue_number', issueNumber);
 
       - name: Add plan-approved label to issue
         if: steps.check-plan.outputs.should_run == 'true'
         run: |
+          echo "Adding label '${{ env.APPROVAL_LABEL }}' to issue #${{ steps.check-plan.outputs.issue_number }}"
           gh issue edit "${{ steps.check-plan.outputs.issue_number }}" \
-            --add-label "plan-approved"
+            --add-label "${{ env.APPROVAL_LABEL }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

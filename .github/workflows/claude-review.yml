@@ -12,23 +12,63 @@ permissions:
   issues: write
   id-token: write
 
+env:
+  # Branch prefix for plan PRs
+  PLAN_BRANCH_PREFIX: 'plan/'
+
 jobs:
   respond-to-comment:
-    if: |
-      (github.event_name == 'pull_request_review_comment' &&
-       startsWith(github.event.pull_request.head.ref, 'plan/')) ||
-      (github.event_name == 'issue_comment' &&
-       contains(github.event.issue.body, 'Plan for issue'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Check if this is a plan PR comment
+        id: check-plan
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const eventName = context.eventName;
+            const planBranchPrefix = '${{ env.PLAN_BRANCH_PREFIX }}';
+            let shouldRun = false;
+            let prNumber = null;
+            let reason = '';
+
+            if (eventName === 'pull_request_review_comment') {
+              const branchRef = context.payload.pull_request.head.ref;
+              prNumber = context.payload.pull_request.number;
+              if (branchRef.startsWith(planBranchPrefix)) {
+                shouldRun = true;
+                reason = `Inline comment on plan PR branch "${branchRef}"`;
+              } else {
+                reason = `Inline comment on non-plan branch "${branchRef}"`;
+              }
+            } else if (eventName === 'issue_comment') {
+              const issueBody = context.payload.issue.body || '';
+              if (issueBody.includes('Plan for issue')) {
+                shouldRun = true;
+                reason = `Comment on issue with plan PR in body`;
+                prNumber = context.payload.issue.number;
+              } else {
+                reason = `Comment on issue without plan PR in body`;
+              }
+            }
+
+            core.info(`Event: ${eventName}`);
+            core.info(`Should run: ${shouldRun}`);
+            core.info(`Reason: ${reason}`);
+            if (prNumber) core.info(`PR/Issue number: ${prNumber}`);
+
+            core.setOutput('should_run', shouldRun.toString());
+            core.setOutput('pr_number', prNumber || '');
+
       - name: Checkout repository
+        if: steps.check-plan.outputs.should_run == 'true'
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
           ref: ${{ github.event.pull_request.head.ref || github.event.repository.default_branch }}
 
       - name: Respond to review comment
+        if: steps.check-plan.outputs.should_run == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           #anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

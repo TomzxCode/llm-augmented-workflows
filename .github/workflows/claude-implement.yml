@@ -10,6 +10,10 @@ permissions:
   issues: write
   id-token: write
 
+env:
+  # Label that triggers implementation workflow
+  APPROVAL_LABEL: 'plan-approved'
+
 jobs:
   check-label:
     runs-on: ubuntu-latest
@@ -23,15 +27,22 @@ jobs:
         with:
           script: |
             const approvalLabel = '${{ github.event.label.name }}';
-            const configuredLabel = 'plan-approved'; // Make configurable via workflow inputs in future
+            const configuredLabel = '${{ env.APPROVAL_LABEL }}';
+            const issueNumber = context.payload.issue.number;
+
+            core.info(`Added label: "${approvalLabel}"`);
+            core.info(`Configured approval label: "${configuredLabel}"`);
+            core.info(`Issue number: ${issueNumber}`);
 
             if (approvalLabel !== configuredLabel) {
+              core.info(`❌ Skipping: Label "${approvalLabel}" does not match approval label "${configuredLabel}"`);
               core.setOutput('should_run', 'false');
               return;
             }
 
+            core.info(`✅ Running: Approval label "${configuredLabel}" was added to issue #${issueNumber}`);
             core.setOutput('should_run', 'true');
-            core.setOutput('issue_number', context.payload.issue.number);
+            core.setOutput('issue_number', issueNumber);
 
   implement:
     needs: check-label
