@@ -70,4 +70,5 @@ jobs:
             ISSUE_NUMBER=${{ needs.check-label.outputs.issue_number }}
 
           claude_args: |
-            --max-turns 30
+            --allowedTools Glob,Grep,Read,Write,Edit,Bash(gh:*),Bash(git:*),Bash(date:*)
+            --max-turns 100

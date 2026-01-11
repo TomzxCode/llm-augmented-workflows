@@ -84,4 +84,5 @@ jobs:
             COMMENT_TYPE=${{ github.event_name == 'pull_request_review_comment' && 'inline' || 'general' }}
 
           claude_args: |
-            --max-turns 15
+            --allowedTools Glob,Grep,Read,Edit,Bash(gh:*),Bash(git:*)
+            --max-turns 100
