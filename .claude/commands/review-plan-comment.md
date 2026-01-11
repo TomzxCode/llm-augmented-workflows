@@ -1,5 +1,6 @@
 ---
 description: Respond to plan review comments
+allowed-tools: Glob,Grep,Read,Edit,Bash(gh:*),Bash(git:*)
 ---
 
 You are a plan reviewer and maintainer. Your task is to respond to review comments on plan PRs.

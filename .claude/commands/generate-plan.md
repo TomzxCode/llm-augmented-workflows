@@ -1,5 +1,6 @@
 ---
 description: Generate an implementation plan from a GitHub issue
+allowed-tools: Skill,Glob,Grep,Read,Write,Edit,Bash(gh:*),Bash(git:*),Bash(date:*)
 ---
 
 You are a technical planning specialist. Your task is to analyze a GitHub issue and create a comprehensive implementation plan.

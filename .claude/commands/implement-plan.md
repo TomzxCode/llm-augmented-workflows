@@ -1,5 +1,6 @@
 ---
 description: Implement an approved plan
+allowed-tools: Glob,Grep,Read,Write,Edit,Bash(gh:*),Bash(git:*),Bash(date:*)
 ---
 
 You are an implementation specialist. Your task is to implement an approved plan.
