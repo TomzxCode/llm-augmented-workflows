@@ -1,0 +1,68 @@
+name: Claude Plan Generation
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  check-labels:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if workflow should run
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const triggerLabels = ${{ github.event_name == 'issues' && '[]' || '[]' }};
+
+            // If no label filter configured, always run
+            if (!triggerLabels || triggerLabels.length === 0) {
+              core.setOutput('should_run', 'true');
+              return;
+            }
+
+            // Check if issue has any of the trigger labels
+            const issueLabels = context.payload.issue.labels.map(l => l.name);
+            const shouldRun = triggerLabels.some(label => issueLabels.includes(label));
+            core.setOutput('should_run', shouldRun.toString());
+
+  generate-plan:
+    needs: check-labels
+    if: needs.check-labels.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Ensure plans directory exists
+        run: mkdir -p plans
+
+      - name: Generate Plan with Claude
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          prompt: |
+            /generate-plan
+            REPO=${{ github.repository }}
+            ISSUE_NUMBER=${{ github.event.issue.number }}
+            ISSUE_TITLE=${{ github.event.issue.title }}
+            ISSUE_BODY=${{ github.event.issue.body }}
+            ISSUE_AUTHOR=${{ github.event.issue.user.login }}
+
+          claude_args: |
+            --max-turns 20

@@ -1,0 +1,47 @@
+name: Claude Plan Merged
+
+on:
+  pull_request:
+    types: [closed]
+  branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  id-token: write
+
+jobs:
+  label-issue-on-plan-merge:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if this is a plan PR
+        id: check-plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const branchRef = pr.head.ref;
+            const prTitle = pr.title;
+
+            // Check if branch starts with 'plan/'
+            const isPlanBranch = branchRef.startsWith('plan/');
+            // Check if PR title matches "Plan for issue #N" pattern
+            const planIssueMatch = prTitle.match(/Plan for issue #(\d+)/i);
+
+            if (!isPlanBranch || !planIssueMatch) {
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            core.setOutput('should_run', 'true');
+            core.setOutput('issue_number', planIssueMatch[1]);
+
+      - name: Add plan-approved label to issue
+        if: steps.check-plan.outputs.should_run == 'true'
+        run: |
+          gh issue edit "${{ steps.check-plan.outputs.issue_number }}" \
+            --add-label "plan-approved"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
