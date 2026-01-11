@@ -55,7 +55,7 @@ Environment variables provided by the workflow:
    - Check for breaking changes
 
 7. **Create Implementation PR**:
-   - Get current timestamp: `date +%s`
+   - Get current timestamp: `date +%Y%m%d%H%M%S`
    - Create a new branch: `git checkout -b impl/issue-$ISSUE_NUMBER-{timestamp}`
    - Commit all changes with descriptive messages
    - Push the branch: `git push origin impl/issue-$ISSUE_NUMBER-{timestamp}`

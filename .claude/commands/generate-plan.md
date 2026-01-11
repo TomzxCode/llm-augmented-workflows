@@ -85,7 +85,7 @@ Create a file at `plans/$ISSUE_NUMBER.md` with the following structure:
 ```
 
 6. **Create Plan PR**:
-   - Get current timestamp: `date +%s`
+   - Get current timestamp: `date +%Y%m%d%H%M%S`
    - Create a new branch name: `plan/issue-$ISSUE_NUMBER-{timestamp}`
    - Checkout new branch: `git checkout -b plan/issue-$ISSUE_NUMBER-{timestamp}`
    - Write the plan file to `plans/$ISSUE_NUMBER.md`
