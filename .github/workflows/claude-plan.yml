@@ -2,7 +2,7 @@ name: Claude Plan Generation
 
 on:
   issues:
-    types: [opened]
+    types: [opened, labeled]
 
 permissions:
   contents: write
@@ -10,29 +10,49 @@ permissions:
   issues: write
   id-token: write
 
+env:
+  # Set to empty string to trigger on issue creation, or a label name to trigger on that label
+  TRIGGER_LABEL: 'plan-needed'
+
 jobs:
   check-labels:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
     steps:
       - name: Check if workflow should run
         id: check
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
-            const triggerLabels = ${{ github.event_name == 'issues' && '[]' || '[]' }};
+            const triggerLabel = '${{ env.TRIGGER_LABEL }}';
+            const eventType = context.eventName;
+            const issueNumber = context.payload.issue.number;
 
-            // If no label filter configured, always run
-            if (!triggerLabels || triggerLabels.length === 0) {
-              core.setOutput('should_run', 'true');
+            core.setOutput('issue_number', issueNumber);
+
+            // If trigger label is not set, run on issue creation
+            if (!triggerLabel || triggerLabel === '') {
+              if (eventType === 'issues' && context.payload.action === 'opened') {
+                core.setOutput('should_run', 'true');
+              } else {
+                core.setOutput('should_run', 'false');
+              }
               return;
             }
 
-            // Check if issue has any of the trigger labels
-            const issueLabels = context.payload.issue.labels.map(l => l.name);
-            const shouldRun = triggerLabels.some(label => issueLabels.includes(label));
-            core.setOutput('should_run', shouldRun.toString());
+            // If trigger label is set, only run when that label is added
+            if (eventType === 'issues' && context.payload.action === 'labeled') {
+              const addedLabel = context.payload.label.name;
+              if (addedLabel === triggerLabel) {
+                core.setOutput('should_run', 'true');
+              } else {
+                core.setOutput('should_run', 'false');
+              }
+            } else {
+              core.setOutput('should_run', 'false');
+            }
 
   generate-plan:
     needs: check-labels
@@ -60,10 +80,7 @@ jobs:
           prompt: |
             /generate-plan
             REPO=${{ github.repository }}
-            ISSUE_NUMBER=${{ github.event.issue.number }}
-            ISSUE_TITLE=${{ github.event.issue.title }}
-            ISSUE_BODY=${{ github.event.issue.body }}
-            ISSUE_AUTHOR=${{ github.event.issue.user.login }}
+            ISSUE_NUMBER=${{ needs.check-labels.outputs.issue_number }}
 
           claude_args: |
             --max-turns 20
