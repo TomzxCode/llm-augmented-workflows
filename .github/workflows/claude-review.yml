@@ -17,12 +17,13 @@ env:
   PLAN_BRANCH_PREFIX: 'plan/'
 
 jobs:
-  respond-to-comment:
+  check-plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
     steps:
       - name: Check if this is a plan PR comment
-        id: check-plan
+        id: check
         uses: actions/github-script@v8
         with:
           script: |
@@ -60,15 +61,19 @@ jobs:
             core.setOutput('should_run', shouldRun.toString());
             core.setOutput('pr_number', prNumber || '');
 
+  respond-to-comment:
+    needs: check-plan
+    if: needs.check-plan.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
       - name: Checkout repository
-        if: steps.check-plan.outputs.should_run == 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Respond to review comment
-        if: steps.check-plan.outputs.should_run == 'true'
         uses: anthropics/claude-code-action@v1
         env:
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
