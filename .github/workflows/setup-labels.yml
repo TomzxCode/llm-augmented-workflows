@@ -1,0 +1,40 @@
+name: Setup Labels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  setup-repository-labels:
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure labels exist with correct config
+        run: |
+          labels=(
+            "plan-approved|Plan approved - ready for implementation|0E8A16"
+            "plan-needed|Plan needed - issue requires implementation plan|7058FF"
+          )
+
+          for entry in "${labels[@]}"; do
+            IFS='|' read -r name description color <<< "$entry"
+            if gh label create "$name" \
+              --description "$description" \
+              --color "$color" 2>/dev/null; then
+              echo "Created label: $name"
+            else
+              gh label edit "$name" \
+                --description "$description" \
+                --color "$color"
+              echo "Updated label: $name"
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
