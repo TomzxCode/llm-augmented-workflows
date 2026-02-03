@@ -9,9 +9,6 @@ You are a technical planning specialist. Your task is to analyze a GitHub issue 
 Environment variables provided by the workflow:
 - `REPO`: The GitHub repository
 - `ISSUE_NUMBER`: The issue number
-- `ISSUE_TITLE`: The issue title
-- `ISSUE_BODY`: The issue body
-- `ISSUE_AUTHOR`: The issue author
 
 ## Task Steps
 

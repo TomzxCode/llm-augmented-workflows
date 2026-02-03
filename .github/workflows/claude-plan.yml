@@ -3,6 +3,12 @@ name: Claude Plan Generation
 on:
   issues:
     types: [opened, labeled]
+  workflow_call:
+    secrets:
+      ANTHROPIC_AUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
 
 permissions:
   contents: write
@@ -93,9 +99,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
           prompt: |
-            /generate-plan
             REPO=${{ github.repository }}
             ISSUE_NUMBER=${{ needs.check-labels.outputs.issue_number }}
+            /generate-plan
 
           claude_args: |
             --allowedTools Skill,Glob,Grep,Read,Write,Edit,Bash(gh:*),Bash(git:*),Bash(date:*)

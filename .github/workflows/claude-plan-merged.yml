@@ -3,6 +3,7 @@ name: Claude Plan Merged
 on:
   pull_request:
     types: [closed]
+  workflow_call:
 
 permissions:
   contents: read
@@ -18,7 +19,7 @@ env:
 
 jobs:
   label-issue-on-plan-merge:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_call'
     runs-on: ubuntu-latest
     steps:
       - name: Check if this is a plan PR
