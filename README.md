@@ -72,7 +72,11 @@ This option allows you to use these workflows without copying files to your repo
    - `ANTHROPIC_API_KEY` - Your Anthropic API key
    (one of the above is required)
 
-5. **Set up labels** in your repository:
+5. **Configure variables** in your repository (Settings → Secrets and variables → Actions → Variables):
+   - `ANTHROPIC_BASE_URL` - (Optional) Custom base URL for the Anthropic API
+   - `ANTHROPIC_MODEL` - (Optional) Specific model to use (e.g., `claude-sonnet-4-5-20250514`)
+
+6. **Set up labels** in your repository:
    - `plan-needed` - Triggers plan generation
    - `plan-approved` - Triggers implementation
 
@@ -96,7 +100,11 @@ This option allows you to use these workflows without copying files to your repo
    (one of the above is required)
    - `GITHUB_TOKEN` - Automatically provided by GitHub Actions (no setup needed)
 
-3. **Set up labels** using one of these methods:
+3. **Configure variables** in your repository (Settings → Secrets and variables → Actions → Variables):
+   - `ANTHROPIC_BASE_URL` - (Optional) Custom base URL for the Anthropic API
+   - `ANTHROPIC_MODEL` - (Optional) Specific model to use (e.g., `claude-sonnet-4-5-20250514`)
+
+4. **Set up labels** using one of these methods:
    - **Manual**: Create labels in your repository settings:
      - `plan-needed` - Triggers plan generation
      - `plan-approved` - Triggers implementation
