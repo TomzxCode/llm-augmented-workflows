@@ -43,9 +43,6 @@ State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal o
      contents: write
      pull-requests: write
      issues: write
-   concurrency:
-     group: llmaw-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-     cancel-in-progress: false
    jobs:
      dispatch:
        uses: TomzxCode/llm-augmented-workflows/.github/workflows/dispatch.yml@<ref>

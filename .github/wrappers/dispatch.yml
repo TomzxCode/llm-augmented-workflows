@@ -36,10 +36,8 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-
-concurrency:
-  group: llmaw-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
+# Do not add a `concurrency` group here. The reusable dispatch.yml owns it;
+# defining the same group in both the caller and the called workflow deadlocks.
 
 jobs:
   dispatch:
