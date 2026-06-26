@@ -1,0 +1,111 @@
+name: Implementation
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "opencode model id (provider/model)"
+        required: false
+        type: string
+        default: "opencode/deepseek-v4-flash-free"
+      agents-repository:
+        description: "Repository providing opencode skills (owner/repo)"
+        required: false
+        type: string
+        default: "tomzx/agents"
+  workflow_call:
+    inputs:
+      model:
+        description: "opencode model id (provider/model)"
+        required: false
+        type: string
+        default: "opencode/deepseek-v4-flash-free"
+      agents-repository:
+        description: "Repository providing opencode skills (owner/repo)"
+        required: false
+        type: string
+        default: "tomzx/agents"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  # Label that triggers implementation workflow
+  APPROVAL_LABEL: 'plan-approved'
+  # Resolution order: workflow input > repository variable > hardcoded default
+  MODEL: ${{ inputs.model || vars.OPENCODE_MODEL || 'opencode/deepseek-v4-flash-free' }}
+  AGENTS_REPOSITORY: ${{ inputs.agents-repository || vars.AGENTS_REPOSITORY || 'tomzx/agents' }}
+
+jobs:
+  check-label:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
+    steps:
+      - name: Check for approval label
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const approvalLabel = '${{ github.event.label.name }}';
+            const configuredLabel = '${{ env.APPROVAL_LABEL }}';
+            const issueNumber = context.payload.issue.number;
+
+            core.info(`Added label: "${approvalLabel}"`);
+            core.info(`Configured approval label: "${configuredLabel}"`);
+            core.info(`Issue number: ${issueNumber}`);
+
+            if (approvalLabel !== configuredLabel) {
+              core.info(`Skipping: Label "${approvalLabel}" does not match approval label "${configuredLabel}"`);
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            core.info(`Running: Approval label "${configuredLabel}" was added to issue #${issueNumber}`);
+            core.setOutput('should_run', 'true');
+            core.setOutput('issue_number', issueNumber);
+
+  implement:
+    needs: check-label
+    if: needs.check-label.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Install opencode
+        # The installer drops the binary at ~/.opencode/bin and appends it to
+        # $GITHUB_PATH, so `opencode` is on PATH for the steps below.
+        run: curl -fsSL https://opencode.ai/install | bash
+
+      - name: Install skills from ${{ env.AGENTS_REPOSITORY }}
+        run: |
+          agents="$RUNNER_TEMP/agents"
+          git clone "https://github.com/${AGENTS_REPOSITORY}" "$agents"
+          # Global skill discovery reads ~/.opencode/skills and the global
+          # AGENTS.md is read from ~/.config/opencode/AGENTS.md.
+          ln -s "$agents/skills" "$HOME/.opencode/skills"
+          mkdir -p "$HOME/.config/opencode"
+          ln -s "$agents/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
+
+      - name: Read plan and implement with opencode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_DISABLE_AUTO_UPDATE: "1"
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ needs.check-label.outputs.issue_number }}
+        run: |
+          opencode run \
+            --model "$MODEL" \
+            --dangerously-skip-permissions \
+            --command implement-plan

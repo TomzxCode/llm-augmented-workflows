@@ -1,4 +1,4 @@
-name: Claude Plan Merged
+name: Plan Merged
 
 on:
   pull_request:
@@ -8,9 +8,8 @@ permissions:
   contents: read
   pull-requests: read
   issues: write
-  id-token: write
 
 jobs:
   call-plan-merged-workflow:
-    uses: TomzxCode/llm-augmented-workflows/.github/workflows/claude-plan-merged.yml@main
+    uses: TomzxCode/llm-augmented-workflows/.github/workflows/plan-merged.yml@main
     secrets: inherit

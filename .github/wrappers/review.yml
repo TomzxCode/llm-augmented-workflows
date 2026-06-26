@@ -1,4 +1,4 @@
-name: Claude Plan Review Response
+name: Plan Review Response
 
 on:
   pull_request_review_comment:
@@ -10,9 +10,8 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  id-token: write
 
 jobs:
   call-review-workflow:
-    uses: TomzxCode/llm-augmented-workflows/.github/workflows/claude-review.yml@main
+    uses: TomzxCode/llm-augmented-workflows/.github/workflows/review.yml@main
     secrets: inherit

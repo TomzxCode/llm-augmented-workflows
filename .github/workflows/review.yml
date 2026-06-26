@@ -1,0 +1,131 @@
+name: Plan Review Response
+
+on:
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "opencode model id (provider/model)"
+        required: false
+        type: string
+        default: "opencode/deepseek-v4-flash-free"
+      agents-repository:
+        description: "Repository providing opencode skills (owner/repo)"
+        required: false
+        type: string
+        default: "tomzx/agents"
+  workflow_call:
+    inputs:
+      model:
+        description: "opencode model id (provider/model)"
+        required: false
+        type: string
+        default: "opencode/deepseek-v4-flash-free"
+      agents-repository:
+        description: "Repository providing opencode skills (owner/repo)"
+        required: false
+        type: string
+        default: "tomzx/agents"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  # Branch prefix for plan PRs
+  PLAN_BRANCH_PREFIX: 'plan/'
+  # Resolution order: workflow input > repository variable > hardcoded default
+  MODEL: ${{ inputs.model || vars.OPENCODE_MODEL || 'opencode/deepseek-v4-flash-free' }}
+  AGENTS_REPOSITORY: ${{ inputs.agents-repository || vars.AGENTS_REPOSITORY || 'tomzx/agents' }}
+
+jobs:
+  check-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if this is a plan PR comment
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const eventName = context.eventName;
+            const planBranchPrefix = '${{ env.PLAN_BRANCH_PREFIX }}';
+            let shouldRun = false;
+            let prNumber = null;
+            let reason = '';
+
+            if (eventName === 'pull_request_review_comment') {
+              const branchRef = context.payload.pull_request.head.ref;
+              prNumber = context.payload.pull_request.number;
+              if (branchRef.startsWith(planBranchPrefix)) {
+                shouldRun = true;
+                reason = `Inline comment on plan PR branch "${branchRef}"`;
+              } else {
+                reason = `Inline comment on non-plan branch "${branchRef}"`;
+              }
+            } else if (eventName === 'issue_comment') {
+              const issueBody = context.payload.issue.body || '';
+              if (issueBody.includes('Plan for issue')) {
+                shouldRun = true;
+                reason = `Comment on issue with plan PR in body`;
+                prNumber = context.payload.issue.number;
+              } else {
+                reason = `Comment on issue without plan PR in body`;
+              }
+            }
+
+            core.info(`Event: ${eventName}`);
+            core.info(`Should run: ${shouldRun}`);
+            core.info(`Reason: ${reason}`);
+            if (prNumber) core.info(`PR/Issue number: ${prNumber}`);
+
+            core.setOutput('should_run', shouldRun.toString());
+            core.setOutput('pr_number', prNumber || '');
+
+  respond-to-comment:
+    needs: check-plan
+    if: needs.check-plan.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Install opencode
+        # The installer drops the binary at ~/.opencode/bin and appends it to
+        # $GITHUB_PATH, so `opencode` is on PATH for the steps below.
+        run: curl -fsSL https://opencode.ai/install | bash
+
+      - name: Install skills from ${{ env.AGENTS_REPOSITORY }}
+        run: |
+          agents="$RUNNER_TEMP/agents"
+          git clone "https://github.com/${AGENTS_REPOSITORY}" "$agents"
+          # Global skill discovery reads ~/.opencode/skills and the global
+          # AGENTS.md is read from ~/.config/opencode/AGENTS.md.
+          ln -s "$agents/skills" "$HOME/.opencode/skills"
+          mkdir -p "$HOME/.config/opencode"
+          ln -s "$agents/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
+
+      - name: Respond to review comment with opencode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENCODE_DISABLE_AUTO_UPDATE: "1"
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_TYPE: ${{ github.event_name == 'pull_request_review_comment' && 'inline' || 'general' }}
+        run: |
+          opencode run \
+            --model "$MODEL" \
+            --dangerously-skip-permissions \
+            --command review-plan-comment

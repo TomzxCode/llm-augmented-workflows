@@ -1,6 +1,6 @@
 # LLM Augmented Workflows
 
-A complete automation framework for GitHub issue planning and implementation using Claude Code.
+A complete automation framework for GitHub issue planning and implementation using opencode.
 Convert GitHub issues into detailed implementation plans, review them through pull requests, and automatically implement approved plans.
 
 ## Features
@@ -9,7 +9,8 @@ Convert GitHub issues into detailed implementation plans, review them through pu
 - **Two-Stage Review Process** - Plans are reviewed via PR before implementation begins
 - **Automated Implementation** - Approved plans are automatically implemented
 - **GitHub Actions Integration** - Fully integrated workflows for seamless automation
-- **Claude Code Integration** - Uses `anthropics/claude-code-action` for intelligent code generation
+- **opencode Integration** - Uses `opencode run` to drive plan generation, implementation, and review
+- **Configurable Skills Source** - Skills are loaded from any agents repository you choose
 - **Configurable Triggers** - Flexible label-based workflow triggering
 
 ## How It Works
@@ -37,9 +38,9 @@ GitHub Issue
 
 ### Prerequisites
 
-1. GitHub repository with the [Claude GitHub App](https://github.com/apps/claude) installed
-2. GitHub token with `repo`, `pull-request:write`, and `issues:write` permissions
-3. Claude Code OAuth token
+1. A target GitHub repository where the workflows will run
+2. `GITHUB_TOKEN` with `repo`, `pull-request:write`, and `issues:write` permissions (provided automatically by GitHub Actions)
+3. An agents repository (default: `tomzx/agents`) that provides the opencode skills `generate-plan`, `implement-plan`, and `review-plan-comment`
 
 ### Setup Options
 
@@ -60,25 +61,17 @@ This option allows you to use these workflows without copying files to your repo
 
 3. **Copy additional files** to your repository:
    ```bash
-   # Copy Claude commands and settings
-   cp -r .claude your-repo/
-
-   # Copy PR description template
+   # Copy the PR description template
    cp .github/pr-description-template.md your-repo/.github/
    ```
 
-4. **Configure secrets** in your repository (Settings → Secrets and variables → Actions):
-   - `ANTHROPIC_AUTH_TOKEN` - Your Claude Code OAuth token, OR
-   - `ANTHROPIC_API_KEY` - Your Anthropic API key
-   (one of the above is required)
-
-5. **Configure variables** in your repository (Settings → Secrets and variables → Actions → Variables):
-   - `ANTHROPIC_BASE_URL` - (Optional) Custom base URL for the Anthropic API
-   - `ANTHROPIC_MODEL` - (Optional) Specific model to use (e.g., `claude-sonnet-4-5-20250514`)
-
-6. **Set up labels** in your repository:
+4. **Set up labels** in your repository:
    - `plan-needed` - Triggers plan generation
    - `plan-approved` - Triggers implementation
+
+5. **(Optional) Configure variables** in your repository (Settings → Secrets and variables → Actions → Variables) to override the defaults:
+   - `OPENCODE_MODEL` - opencode model id (default: `opencode/deepseek-v4-flash-free`)
+   - `AGENTS_REPOSITORY` - skills repository as `owner/repo` (default: `tomzx/agents`)
 
 #### Option B: Copy to Your Own Repository
 
@@ -87,28 +80,17 @@ This option allows you to use these workflows without copying files to your repo
    # Copy workflows
    cp -r .github/workflows/*.yml your-repo/.github/workflows/
 
-   # Copy Claude commands and settings
-   cp -r .claude your-repo/
-
-   # Copy PR description template
+   # Copy the PR description template
    cp .github/pr-description-template.md your-repo/.github/
    ```
 
-2. **Configure secrets** in your repository settings (Settings → Secrets and variables → Actions):
-   - `ANTHROPIC_AUTH_TOKEN` - Your Claude Code OAuth token, OR
-   - `ANTHROPIC_API_KEY` - Your Anthropic API key
-   (one of the above is required)
-   - `GITHUB_TOKEN` - Automatically provided by GitHub Actions (no setup needed)
-
-3. **Configure variables** in your repository (Settings → Secrets and variables → Actions → Variables):
-   - `ANTHROPIC_BASE_URL` - (Optional) Custom base URL for the Anthropic API
-   - `ANTHROPIC_MODEL` - (Optional) Specific model to use (e.g., `claude-sonnet-4-5-20250514`)
-
-4. **Set up labels** using one of these methods:
+2. **Set up labels** using one of these methods:
    - **Manual**: Create labels in your repository settings:
      - `plan-needed` - Triggers plan generation
      - `plan-approved` - Triggers implementation
    - **Automatic**: Run the `setup-labels.yml` workflow manually from the Actions tab
+
+3. **(Optional) Configure variables** as described in Option A.
 
 ## Usage
 
@@ -134,67 +116,58 @@ Implementation starts when:
 
 ## Configuration
 
-Edit the workflow files to customize behavior:
+Each workflow resolves its model and skills repository with this priority:
+
+1. **Workflow input** (`model`, `agents-repository`) - set when triggering manually or calling as a reusable workflow
+2. **Repository variable** (`OPENCODE_MODEL`, `AGENTS_REPOSITORY`) - set under Settings → Secrets and variables → Actions → Variables
+3. **Hardcoded default** - `opencode/deepseek-v4-flash-free` and `tomzx/agents`
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `model` | `opencode/deepseek-v4-flash-free` | opencode model id (provider/model) |
+| `agents-repository` | `tomzx/agents` | Repository providing the plan/implement/review skills |
 | `trigger_label` | `plan-needed` | Label that triggers plan generation |
 | `approval_label` | `plan-approved` | Label that triggers implementation |
-| `max_turns` | 100 | Maximum Claude Code turns per workflow |
-| `allowed_tools` | *see below* | Tools Claude can use |
+
+### Skills Source
+
+The `generate-plan`, `implement-plan`, and `review-plan-comment` skills are cloned from the configured `agents-repository` at runtime and linked into `~/.opencode/skills`. Point `agents-repository` at any fork or alternative that provides equivalent skills.
 
 ### Review Comments
 
 Plan PRs support interactive review. When you comment on a plan PR:
-- **Technical questions** - Claude responds with explanations
-- **Change requests** - Claude updates the plan accordingly
-- **Clarifications** - Claude provides additional details
+- **Technical questions** - opencode responds with explanations
+- **Change requests** - opencode updates the plan accordingly
+- **Clarifications** - opencode provides additional details
 
-This is handled automatically by the `claude-review.yml` workflow.
-
-### Allowed Tools
-
-By default, Claude can use:
-- `Glob`, `Grep`, `Read`, `Write`, `Edit` - File operations
-- `Bash(gh:*)` - GitHub CLI commands
-- `Bash(git:*)` - Git commands
-- `Bash(date:*)` - Date/time commands
+This is handled automatically by the `review.yml` workflow.
 
 ## Project Structure
 
 ```
 .github/
-├── workflows/
-│   ├── claude-plan.yml              # Issue → Plan workflow (reusable)
-│   ├── claude-implement.yml          # Plan → Implementation workflow (reusable)
-│   ├── claude-plan-merged.yml        # Auto-label on plan merge (reusable)
-│   ├── claude-review.yml             # Respond to plan PR comments (reusable)
-│   └── setup-labels.yml              # Label setup workflow
-├── wrappers/
-│   ├── issue-to-plan.yml             # Wrapper for plan generation
-│   ├── plan-to-implement.yml         # Wrapper for implementation
-│   ├── plan-merged.yml               # Wrapper for plan merge
-│   └── plan-review.yml               # Wrapper for plan review comments
-└── pr-description-template.md        # Implementation PR template
+├ workflows/
+│   ├── plan.yml                       # Issue → Plan workflow (reusable)
+│   ├── implement.yml                  # Plan → Implementation workflow (reusable)
+│   ├── plan-merged.yml                # Auto-label on plan merge (reusable)
+│   ├── review.yml                     # Respond to plan PR comments (reusable)
+│   └── setup-labels.yml               # Label setup workflow
+├ wrappers/
+│   ├── plan.yml                       # Wrapper for plan generation
+│   ├── implement.yml                  # Wrapper for implementation
+│   ├── plan-merged.yml                # Wrapper for plan merge
+│   ├── review.yml                     # Wrapper for plan review comments
+│   └── setup-labels.yml               # Wrapper for label setup
+└── pr-description-template.md         # Implementation PR template
 
-.claude/
-├── commands/
-│   ├── generate-plan.md              # Plan generation command
-│   ├── implement-plan.md             # Implementation command
-│   └── review-plan-comment.md        # Review response command
-└── settings.local.json               # Claude settings
-
-plans/                                # Generated plan files
+plans/                                 # Generated plan files
 ```
 
 ## Customization
 
-### Project Conventions
+### Skills
 
-Edit `.claude/commands/generate-plan.md` and `implement-plan.md` to include:
-- Code conventions (style, patterns)
-- Testing guidelines
-- Documentation standards
+The plan, implementation, and review behavior is defined by the skills in your configured `agents-repository` (default `tomzx/agents`). Fork that repository and point `agents-repository` at your fork to customize the prompts and workflow logic.
 
 ### PR Templates
 

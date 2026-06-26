@@ -1,4 +1,4 @@
-name: Claude Plan Merged
+name: Plan Merged
 
 on:
   pull_request:
@@ -9,7 +9,6 @@ permissions:
   contents: read
   pull-requests: read
   issues: write
-  id-token: write
 
 env:
   # Branch prefix for plan PRs
@@ -42,19 +41,19 @@ jobs:
             const planIssueMatch = prTitle.match(/Plan for issue #(\d+)/i);
 
             if (!isPlanBranch) {
-              core.info(`❌ Skipping: Branch "${branchRef}" does not start with "${planBranchPrefix}"`);
+              core.info(`Skipping: Branch "${branchRef}" does not start with "${planBranchPrefix}"`);
               core.setOutput('should_run', 'false');
               return;
             }
 
             if (!planIssueMatch) {
-              core.info(`❌ Skipping: PR title "${prTitle}" does not match "Plan for issue #N" pattern`);
+              core.info(`Skipping: PR title "${prTitle}" does not match "Plan for issue #N" pattern`);
               core.setOutput('should_run', 'false');
               return;
             }
 
             const issueNumber = planIssueMatch[1];
-            core.info(`✅ Running: This is a plan PR for issue #${issueNumber}`);
+            core.info(`Running: This is a plan PR for issue #${issueNumber}`);
             core.setOutput('should_run', 'true');
             core.setOutput('issue_number', issueNumber);
 
