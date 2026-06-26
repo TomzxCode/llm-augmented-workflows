@@ -8,6 +8,6 @@ permissions:
   issues: write
 
 jobs:
-  call-implement-workflow:
+  setup:
     uses: TomzxCode/llm-augmented-workflows/.github/workflows/setup-labels.yml@main
     secrets: inherit

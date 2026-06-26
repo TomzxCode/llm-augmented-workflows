@@ -1,0 +1,29 @@
+[project]
+name = "llm-augmented-workflows"
+version = "0.1.0"
+description = "Config-driven GitHub Actions workflow engine for opencode agents."
+requires-python = ">=3.14"
+dependencies = ["pyyaml>=6.0"]
+
+[project.scripts]
+llmaw = "llm_augmented_workflows.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_augmented_workflows"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

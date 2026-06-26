@@ -2,40 +2,56 @@ name: Setup Labels
 
 on:
   workflow_dispatch:
+    inputs:
+      framework-repository:
+        description: "Repository providing this engine (owner/repo)"
+        required: false
+        type: string
+        default: "TomzxCode/llm-augmented-workflows"
+      framework-ref:
+        description: "Ref of the engine repository to check out"
+        required: false
+        type: string
+        default: "main"
   workflow_call:
+    inputs:
+      framework-repository:
+        description: "Repository providing this engine (owner/repo)"
+        required: false
+        type: string
+        default: "TomzxCode/llm-augmented-workflows"
+      framework-ref:
+        description: "Ref of the engine repository to check out"
+        required: false
+        type: string
+        default: "main"
 
 permissions:
   contents: read
   issues: write
 
 jobs:
-  setup-repository-labels:
-    if: |
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      github.event_name == 'workflow_dispatch'
+  sync-labels:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
-      - name: Ensure labels exist with correct config
-        run: |
-          labels=(
-            "plan-approved|Plan approved - ready for implementation|0E8A16"
-            "plan-needed|Plan needed - issue requires implementation plan|7058FF"
-          )
+      - name: Checkout engine
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.framework-repository || 'TomzxCode/llm-augmented-workflows' }}
+          ref: ${{ inputs.framework-ref || 'main' }}
+          path: .llmaw
+          fetch-depth: 1
 
-          for entry in "${labels[@]}"; do
-            IFS='|' read -r name description color <<< "$entry"
-            if gh label create "$name" \
-              --description "$description" \
-              --color "$color" 2>/dev/null; then
-              echo "Created label: $name"
-            else
-              gh label edit "$name" \
-                --description "$description" \
-                --color "$color"
-              echo "Updated label: $name"
-            fi
-          done
+      - name: Setup uv
+        uses: astral-sh/setup-uv@8.2.0
+
+      - name: Sync labels from flows.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FLOWS_FILE: .github/flows.yml
+        run: uv run --project .llmaw llmaw sync-labels

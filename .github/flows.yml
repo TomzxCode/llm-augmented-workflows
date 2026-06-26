@@ -1,0 +1,78 @@
+# LLM-Augmented Workflows configuration.
+#
+# This file is the single source of truth for what the dispatcher does.
+# Add a rule (event + run steps) and it takes effect on the next matching event.
+# See docs/flows.md for the schema and recipes.
+
+defaults:
+  model: opencode/deepseek-v4-flash-free   # opencode model id (provider/model)
+  agents_repository: tomzx/agents          # repo providing skills, cloned at runtime
+  timeout_minutes: 30
+  permissions: skip                        # -> opencode --dangerously-skip-permissions
+
+# Labels auto-created/updated by the setup-labels workflow.
+labels:
+  - name: plan-needed
+    description: Issue requires an implementation plan
+    color: 7058FF
+  - name: plan-approved
+    description: Plan approved, ready for implementation
+    color: 0E8A16
+
+flows:
+  # The default flow: issue -> plan PR -> review -> implementation PR.
+  plan:
+    description: Issue to plan to implementation.
+    rules:
+      - id: generate-plan
+        when:
+          event: issues
+          action: labeled
+          label: plan-needed
+        run:
+          - skill: generate-plan
+
+      - id: respond-to-review-inline
+        when:
+          event: pull_request_review_comment
+          action: created
+          branch_prefix: plan/
+        run:
+          - skill: review-plan-comment
+
+      - id: respond-to-review-comment
+        when:
+          event: issue_comment
+          action: created
+          body_contains: "Plan for issue"
+        run:
+          - skill: review-plan-comment
+
+      - id: on-plan-merged
+        when:
+          event: pull_request
+          action: closed
+          merged: true
+          branch_prefix: plan/
+        run:
+          # Deterministic relabel of the linked issue, no agent needed.
+          - labels:
+              add: [plan-approved]
+              target: linked-issue
+
+      - id: implement
+        when:
+          event: issues
+          action: labeled
+          label: plan-approved
+        run:
+          - skill: implement-plan
+
+      - id: close-on-impl-merged
+        when:
+          event: pull_request
+          action: closed
+          merged: true
+          branch_prefix: impl/
+        run:
+          - shell: examples/close-linked-issue.sh
