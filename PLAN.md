@@ -41,7 +41,7 @@ Terminal outcomes emerge naturally: an agent closes the issue (will not fix), or
 
 ## Flow Configuration
 
-Single source of truth: `.github/flows.yml`.
+Single source of truth: `.github/llmaw/flows.yml`.
 
 ### Schema
 
@@ -243,7 +243,7 @@ Two reusable pieces plus one wrapper.
 - Job `route`:
   - Checks out the repo (to read `flows.yml`) and the engine repo into `.llmaw/` (by `framework-repository`/`framework-ref`).
   - Runs `uv run --project .llmaw llmaw route` (Python package, depends on `pyyaml`).
-  - The command loads `.github/flows.yml`, evaluates the current event against every rule, and writes a JSON array of matched rules to `$GITHUB_OUTPUT`.
+  - The command loads `.github/llmaw/flows.yml`, evaluates the current event against every rule, and writes a JSON array of matched rules to `$GITHUB_OUTPUT`.
   - Outputs `matched` (JSON list), `count`.
 - Job `run-rule` (`needs: route`, matrix over `fromJson(needs.route.outputs.matched)`):
   - Checks out the repo (default branch, shallowly) and the engine repo into `.llmaw/`.
@@ -304,13 +304,13 @@ The `<ref>` controls versioning:
 | `@v1` | Latest within a major tag | Recommended default, gets fixes without breaking changes. |
 | `@<full-sha>` | Immutable pin | Supply-chain safety for production repos. |
 
-Releases are cut as git tags (`v1`, `v1.2`, `v1.2.3`) plus a moving major tag. The wrapper is identical across repos, so org rollout is a bulk commit of three files into each repo: the wrapper above, `.github/flows.yml`, and any local `.agents/commands/*.md` prompt files it references. Skills themselves are not copied, they come from the shared, versioned `agents_repository`. Model and agents-repository config reach the dispatcher through the wrapper inputs or repo/org variables, and the auto-provided `GITHUB_TOKEN` is the only credential needed for the default free model.
+Releases are cut as git tags (`v1`, `v1.2`, `v1.2.3`) plus a moving major tag. The wrapper is identical across repos, so org rollout is a bulk commit of three files into each repo: the wrapper above, `.github/llmaw/flows.yml`, and any local `.agents/commands/*.md` prompt files it references. Skills themselves are not copied, they come from the shared, versioned `agents_repository`. Model and agents-repository config reach the dispatcher through the wrapper inputs or repo/org variables, and the auto-provided `GITHUB_TOKEN` is the only credential needed for the default free model.
 
 This keeps the opencode architecture, hosts no service, and avoids the now-deprecated "required workflows" feature entirely.
 
 ## Generalizing setup-labels
 
-`.github/workflows/setup-labels.yml` reads the `labels:` block of `.github/flows.yml` and creates or updates each label by running `llmaw sync-labels` from the checked-out engine. Users add a label to config and it appears on next run, no more hardcoded list.
+`.github/workflows/setup-labels.yml` reads the `labels:` block of `.github/llmaw/flows.yml` and creates or updates each label by running `llmaw sync-labels` from the checked-out engine. Users add a label to config and it appears on next run, no more hardcoded list.
 
 ## File Layout
 

@@ -105,7 +105,7 @@ jobs:
       - name: Route event to matching rules
         id: route
         env:
-          FLOWS_FILE: .github/flows.yml
+          FLOWS_FILE: .github/llmaw/flows.yml
           FORCE_RULE_ID: ${{ inputs.rule-id }}
         run: uv run --project .llmaw llmaw route
 

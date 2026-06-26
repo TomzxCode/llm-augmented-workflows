@@ -21,7 +21,7 @@ State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal o
 
 ## Features
 
-- **One config file** (`.github/flows.yml`) defines every flow as event-matched rules.
+- **One config file** (`.github/llmaw/flows.yml`) defines every flow as event-matched rules.
 - **Ordered steps** per rule: `labels`, `shell` (deterministic, token-free) and `skill`, `prompt` (opencode agents).
 - **Deterministic transitions** like relabeling cost zero tokens.
 - **opencode skills** are sourced from a configurable agents repository (default `tomzx/agents`).
@@ -49,7 +49,7 @@ State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal o
        secrets: inherit
    ```
 
-2. Add `.github/flows.yml` describing your flows (see [`docs/flows.md`](docs/flows.md) and the example in this repo).
+2. Add `.github/llmaw/flows.yml` describing your flows (see [`docs/flows.md`](docs/flows.md) and the example in this repo).
 
 3. (Optional) Set repo/org variables to override the defaults:
    - `OPENCODE_MODEL` - opencode model id (default `opencode/deepseek-v4-flash-free`)

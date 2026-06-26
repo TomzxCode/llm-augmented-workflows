@@ -1,6 +1,6 @@
 # Authoring Flows
 
-The dispatcher reads `.github/flows.yml` and routes GitHub events to rules. Each rule runs an ordered list of steps. This document is a practical reference with recipes.
+The dispatcher reads `.github/llmaw/flows.yml` (in the consumer repo) and routes GitHub events to rules. Each rule runs an ordered list of steps. This document is a practical reference with recipes.
 
 ## File shape
 

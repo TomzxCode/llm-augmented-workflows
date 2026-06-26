@@ -42,7 +42,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-    flows_path = os.environ.get("FLOWS_FILE", ".github/flows.yml")
+    flows_path = os.environ.get("FLOWS_FILE", ".github/llmaw/flows.yml")
     base_model = os.environ.get("MODEL", "")
     base_agents_repo = os.environ.get("AGENTS_REPOSITORY", "")
 

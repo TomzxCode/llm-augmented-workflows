@@ -32,7 +32,7 @@ def sync_label(name: str, description: str, color: str) -> None:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    flows = load_flows(os.environ.get("FLOWS_FILE", ".github/flows.yml"))
+    flows = load_flows(os.environ.get("FLOWS_FILE", ".github/llmaw/flows.yml"))
     labels = flows.get("labels") or []
     if not labels:
         log.warning("no labels declared in flows.yml")
