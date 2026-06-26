@@ -95,6 +95,8 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v8.2.0
+        with:
+          working-directory: .llmaw
 
       - name: Route event to matching rules
         id: route
@@ -129,6 +131,8 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v8.2.0
+        with:
+          working-directory: .llmaw
 
       - name: Run deterministic steps
         if: matrix.rule.has_deterministic == true

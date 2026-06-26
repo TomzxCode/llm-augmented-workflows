@@ -49,6 +49,8 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v8.2.0
+        with:
+          working-directory: .llmaw
 
       - name: Sync labels from flows.yml
         env:
