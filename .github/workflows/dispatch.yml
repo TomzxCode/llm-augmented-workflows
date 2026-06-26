@@ -57,6 +57,10 @@ on:
         required: false
         type: string
         default: "main"
+      rule-id:
+        description: "Dry-run: force-run a single rule by id (skips event matching)"
+        required: false
+        type: string
 
 permissions:
   contents: write
