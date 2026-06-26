@@ -94,7 +94,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@8.2.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Route event to matching rules
         id: route
@@ -128,7 +128,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@8.2.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Run deterministic steps
         if: matrix.rule.has_deterministic == true
