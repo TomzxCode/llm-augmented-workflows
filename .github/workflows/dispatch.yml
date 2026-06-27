@@ -81,11 +81,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Mint a GitHub App installation token. Events produced by the default
+      # GITHUB_TOKEN never trigger downstream workflows (anti-recursion), so the
+      # label state-machine would stall. All chaining mutations (labels, PR
+      # create/merge, comments, git push) must be attributed to the App instead.
+      # Requires repo/org secrets LLMAW_APP_ID and LLMAW_APP_PRIVATE_KEY, and the
+      # App installed with contents/issues/pull-requests write + metadata read.
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.LLMAW_APP_ID }}
+          private-key: ${{ secrets.LLMAW_APP_PRIVATE_KEY }}
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
           ref: ${{ github.event.repository.default_branch }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Checkout engine
         uses: actions/checkout@v6
@@ -126,8 +140,7 @@ jobs:
         env:
           MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
           OUTCOME_YAML: ${{ runner.temp }}/outcome.yaml
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           OPENCODE_DISABLE_AUTO_UPDATE: "1"
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
