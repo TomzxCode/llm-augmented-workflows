@@ -61,6 +61,10 @@ on:
         description: "Dry-run: force-run a single rule by id (skips event matching)"
         required: false
         type: string
+    secrets:
+      LLMAW_APP_PRIVATE_KEY:
+        description: "PEM private key for the GitHub App"
+        required: true
 
 permissions:
   contents: write
