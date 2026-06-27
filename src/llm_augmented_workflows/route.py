@@ -66,7 +66,7 @@ def main() -> int:
     _write_output("matched", json.dumps(matrix))
     _write_output("count", str(len(matrix)))
     _write_output("has_agent", str(any(m.get("has_agent") for m in matrix)))
-    matched_file = os.environ.get("LLMAW_MATCHED_FILE")
+    matched_file = os.environ.get("MATCHED_FILE")
     if matched_file:
         Path(matched_file).write_text(json.dumps(matrix))
 

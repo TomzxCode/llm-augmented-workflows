@@ -80,8 +80,6 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -107,7 +105,7 @@ jobs:
         env:
           FLOWS_FILE: .github/llmaw/flows.yml
           FORCE_RULE_ID: ${{ inputs.rule-id }}
-          LLMAW_MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
+          MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
         run: uv run --project .llmaw llmaw route
 
       - name: Install opencode
