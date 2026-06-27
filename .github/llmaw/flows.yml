@@ -199,7 +199,7 @@ flows:
 
   feature:
     description: Full SDLC pipeline; each phase drafts (create-*) then gates (review-*).
-    execution: event-driven
+    execution: continuous
     rules:
       # --- Stage: needs validation ---
       - id: feat-needs-create
@@ -478,7 +478,7 @@ flows:
 
   bugfix:
     description: SDLC bug-fix fast path (check-duplicates -> reproduce -> fix -> PR).
-    execution: event-driven
+    execution: continuous
     rules:
       - id: bug-duplicates
         when: { event: issues, action: labeled, label: llmaw:bug }
