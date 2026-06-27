@@ -1,7 +1,7 @@
 ---
 issue: "#18"
 title: "Support other CLI tools"
-status: draft
+status: approved
 ---
 
 # Needs Assessment: Support Other CLI Tools
