@@ -15,7 +15,9 @@ from llm_augmented_workflows.engine import (
     flatten_rules,
     load_flows,
     matches,
+    normalize_action,
     normalize_label_step,
+    normalize_on_outcome,
     normalize_run,
     parse_when,
     rule_to_matrix,
@@ -46,8 +48,8 @@ def test_normalize_run_rejects_unknown_kind():
         normalize_run([{"bogus": "x"}])
 
 
-def test_split_steps_orders_deterministic_before_agent():
-    det, agent = split_steps(
+def test_split_steps_pre_deterministic_before_agent():
+    pre, agent, post, oc = split_steps(
         normalize_run(
             [
                 {"labels": {"add": ["a"]}},
@@ -56,13 +58,74 @@ def test_split_steps_orders_deterministic_before_agent():
             ]
         )
     )
-    assert [next(iter(d)) for d in det] == ["labels", "shell"]
+    assert [next(iter(d)) for d in pre] == ["labels", "shell"]
     assert next(iter(agent)) == "skill"
+    assert post == []
+    assert oc is None
 
 
-def test_split_steps_rejects_deterministic_after_agent():
+def test_split_steps_deterministic_after_agent_is_post():
+    # labels/shell may appear on either side of the agent
+    pre, agent, post, oc = split_steps(
+        normalize_run(
+            [
+                {"skill": "x"},
+                {"labels": {"remove": ["a"]}},
+            ]
+        )
+    )
+    assert pre == []
+    assert next(iter(agent)) == "skill"
+    assert [next(iter(s)) for s in post] == ["labels"]
+    assert oc is None
+
+
+def test_split_steps_pre_agent_post_outcome():
+    pre, agent, post, oc = split_steps(
+        normalize_run(
+            [
+                {"labels": {"add": ["pre"]}},
+                {"skill": "x"},
+                {"labels": {"remove": ["post"]}},
+                {"on_outcome": {"approved": {"labels": {"add": ["b"]}}}},
+            ]
+        )
+    )
+    assert [next(iter(s)) for s in pre] == ["labels"]
+    assert next(iter(agent)) == "skill"
+    assert [next(iter(s)) for s in post] == ["labels"]
+    assert next(iter(oc)) == "on_outcome"
+
+
+def test_split_steps_rejects_deterministic_after_on_outcome():
     with pytest.raises(ConfigError):
-        split_steps(normalize_run([{"skill": "x"}, {"labels": {"add": ["a"]}}]))
+        split_steps(
+            normalize_run(
+                [
+                    {"skill": "x"},
+                    {"on_outcome": {"approved": {"labels": {"add": ["a"]}}}},
+                    {"labels": {"add": ["b"]}},
+                ]
+            )
+        )
+
+
+def test_split_steps_rejects_on_outcome_before_agent():
+    with pytest.raises(ConfigError):
+        split_steps(normalize_run([{"on_outcome": {"approved": {"labels": {"add": ["a"]}}}}]))
+
+
+def test_split_steps_rejects_two_on_outcome_steps():
+    with pytest.raises(ConfigError):
+        split_steps(
+            normalize_run(
+                [
+                    {"skill": "x"},
+                    {"on_outcome": {"approved": {"labels": {"add": ["a"]}}}},
+                    {"on_outcome": {"approved": {"labels": {"add": ["b"]}}}},
+                ]
+            )
+        )
 
 
 def test_split_steps_rejects_two_agent_steps():
@@ -223,3 +286,114 @@ def test_parse_when_coerces_merged():
     assert parse_when({"merged": True}).merged is True
     assert parse_when({"merged": False}).merged is False
     assert parse_when({}).merged is None
+
+
+# --------------------------------------------------------------------------- #
+# on_outcome normalization
+# --------------------------------------------------------------------------- #
+def test_normalize_action_coerces_and_defaults():
+    a = normalize_action({"labels": {"add": "x", "remove": "y"}}, "k")
+    assert a["labels"]["add"] == ["x"] and a["labels"]["remove"] == ["y"]
+    assert a["labels"]["target"] == "subject"
+    assert a["close"] is False and a["comment"] is None
+    empty = normalize_action(None, "k")
+    assert empty == {
+        "labels": {"add": [], "remove": [], "target": "subject"},
+        "close": False,
+        "comment": None,
+    }
+
+
+def test_normalize_action_rejects_bad_fields():
+    with pytest.raises(ConfigError):
+        normalize_action({"labels": {"target": "bogus"}}, "k")
+    with pytest.raises(ConfigError):
+        normalize_action({"labels": "not a mapping"}, "k")
+    with pytest.raises(ConfigError):
+        normalize_action({"close": "yes"}, "k")
+    with pytest.raises(ConfigError):
+        normalize_action({"comment": 5}, "k")
+
+
+def test_normalize_on_outcome_cases_and_default():
+    out = normalize_on_outcome(
+        {"on_outcome": {"approved": {"labels": {"add": ["x"]}}, "_": {"comment": "fallback"}}}
+    )
+    assert set(out["cases"]) == {"approved"}
+    assert out["cases"]["approved"]["labels"]["add"] == ["x"]
+    assert out["default"]["comment"] == "fallback"
+
+
+def test_normalize_on_outcome_rejects_non_mapping():
+    with pytest.raises(ConfigError):
+        normalize_on_outcome({"on_outcome": "oops"})
+    with pytest.raises(ConfigError):
+        normalize_on_outcome({"on_outcome": {}})
+
+
+def test_normalize_on_outcome_needs_a_verdict_case():
+    with pytest.raises(ConfigError):
+        normalize_on_outcome({"on_outcome": {"_": {"comment": "only default"}}})
+
+
+# --------------------------------------------------------------------------- #
+# on_outcome end to end
+# --------------------------------------------------------------------------- #
+def test_on_outcome_threaded_through_matrix(tmp_path):
+    path = write_flows(
+        tmp_path,
+        """
+        flows:
+          f:
+            rules:
+              - id: r
+                when: {event: issues, action: labeled, label: llmaw:feature-request}
+                run:
+                  - skill: create-needs-assessment
+                  - on_outcome:
+                      approved: {labels: {add: [llmaw:needs-approved]}}
+                      rejected: {close: true, comment: wontfix}
+                      needs-info: {labels: {add: [llmaw:needs-info]}}
+                      _: {comment: "no verdict"}
+        """,
+    )
+    rules = flatten_rules(load_flows(path), "m", "r")
+    assert len(rules) == 1
+    r = rules[0]
+    assert r.agent is not None and r.on_outcome is not None
+    cases = r.on_outcome["cases"]
+    assert set(cases) == {"approved", "rejected", "needs-info"}
+    assert cases["approved"]["labels"]["add"] == ["llmaw:needs-approved"]
+    assert cases["rejected"]["close"] is True
+    assert cases["rejected"]["comment"] == "wontfix"
+    assert r.on_outcome["default"]["comment"] == "no verdict"
+    m = rule_to_matrix(r)
+    assert m["has_on_outcome"] is True
+    assert m["on_outcome"]["cases"]["needs-info"]["labels"]["add"] == ["llmaw:needs-info"]
+
+
+def test_post_deterministic_threaded_through_matrix(tmp_path):
+    path = write_flows(
+        tmp_path,
+        """
+        flows:
+          f:
+            rules:
+              - id: r
+                when: {event: issues, action: labeled, label: llmaw:review-x}
+                run:
+                  - skill: review-x
+                  - labels: {remove: [llmaw:review-x]}
+                  - on_outcome:
+                      approved: {labels: {add: [llmaw:x-approved]}}
+        """,
+    )
+    r = flatten_rules(load_flows(path), "m", "r")[0]
+    assert r.deterministic == []  # nothing pre-agent
+    assert [next(iter(s)) for s in r.post_deterministic] == ["labels"]
+    m = rule_to_matrix(r)
+    assert m["has_deterministic"] is False
+    assert m["has_post_deterministic"] is True
+    assert m["post_deterministic"][0] == {
+        "labels": {"add": [], "remove": ["llmaw:review-x"], "target": "subject"}
+    }

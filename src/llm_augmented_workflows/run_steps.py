@@ -94,7 +94,7 @@ def run_shell(step: dict) -> None:
     subprocess.run(["bash", script], check=True)
 
 
-def main() -> int:
+def main(phase: str = "pre") -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     raw = os.environ.get("MATCHED_RULE")
     if not raw:
@@ -102,7 +102,8 @@ def main() -> int:
         return 1
 
     rule = json.loads(raw)
-    for step in rule.get("deterministic", []):
+    key = "deterministic" if phase == "pre" else "post_deterministic"
+    for step in rule.get(key, []):
         if "labels" in step:
             apply_labels(step)
         elif "shell" in step:

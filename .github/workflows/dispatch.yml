@@ -77,11 +77,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  route:
+  dispatch:
     runs-on: ubuntu-latest
-    outputs:
-      matched: ${{ steps.route.outputs.matched }}
-      count: ${{ steps.route.outputs.count }}
+    timeout-minutes: 60
+    env:
+      MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -107,58 +107,15 @@ jobs:
         env:
           FLOWS_FILE: .github/llmaw/flows.yml
           FORCE_RULE_ID: ${{ inputs.rule-id }}
+          LLMAW_MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
         run: uv run --project .llmaw llmaw route
 
-  run-rule:
-    needs: route
-    if: needs.route.outputs.count != '0'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        rule: ${{ fromJson(needs.route.outputs.matched) }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-          ref: ${{ github.event.repository.default_branch }}
-
-      - name: Checkout engine
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.framework-repository || 'TomzxCode/llm-augmented-workflows' }}
-          ref: ${{ inputs.framework-ref || 'main' }}
-          path: .llmaw
-          fetch-depth: 1
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          working-directory: .llmaw
-
-      - name: Run deterministic steps
-        if: matrix.rule.has_deterministic == true
-        env:
-          MATCHED_RULE: ${{ toJSON(matrix.rule) }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: uv run --project .llmaw llmaw run-steps
-
       - name: Install opencode
-        if: matrix.rule.has_agent == true
+        if: steps.route.outputs.has_agent == 'true'
         run: curl -fsSL https://opencode.ai/install | bash
 
-      - name: Install skills from ${{ matrix.rule.agent.agents_repository }}
-        if: matrix.rule.has_agent == true
-        env:
-          AGENTS_REPOSITORY: ${{ matrix.rule.agent.agents_repository }}
+      - name: Install skills from ${{ env.AGENTS_REPOSITORY }}
+        if: steps.route.outputs.has_agent == 'true'
         run: |
           agents="$RUNNER_TEMP/agents"
           git clone "https://github.com/${AGENTS_REPOSITORY}" "$agents"
@@ -166,9 +123,11 @@ jobs:
           mkdir -p "$HOME/.config/opencode"
           ln -s "$agents/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
 
-      - name: Run agent
-        if: matrix.rule.has_agent == true
+      - name: Run matched rules
+        if: steps.route.outputs.count != '0'
         env:
+          MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
+          OUTCOME_YAML: ${{ runner.temp }}/outcome.yaml
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENCODE_DISABLE_AUTO_UPDATE: "1"
@@ -181,19 +140,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_TYPE: ${{ github.event_name == 'pull_request_review_comment' && 'inline' || 'general' }}
-        run: |
-          if [ "${{ matrix.rule.agent.kind }}" = "skill" ]; then
-            opencode run \
-              --model "${{ matrix.rule.agent.model }}" \
-              --dangerously-skip-permissions \
-              --command "${{ matrix.rule.agent.ref }}"
-          else
-            opencode run \
-              --model "${{ matrix.rule.agent.model }}" \
-              --dangerously-skip-permissions \
-              "$(cat '${{ matrix.rule.agent.ref }}')"
-          fi
+        run: uv run --project .llmaw llmaw run-rule

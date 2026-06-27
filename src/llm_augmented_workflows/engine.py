@@ -8,7 +8,7 @@ tested directly. The CLI entrypoints (``route.py``, ``run_steps.py``,
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 
 DETERMINISTIC_KINDS: tuple[str, ...] = ("labels", "shell")
 AGENT_KINDS: tuple[str, ...] = ("skill", "prompt")
-ALL_KINDS: tuple[str, ...] = DETERMINISTIC_KINDS + AGENT_KINDS
+POST_KINDS: tuple[str, ...] = ("on_outcome",)
+ALL_KINDS: tuple[str, ...] = DETERMINISTIC_KINDS + AGENT_KINDS + POST_KINDS
 
 
 class ConfigError(Exception):
@@ -51,6 +52,8 @@ class Rule:
     when: When
     deterministic: list[dict[str, Any]]
     agent: AgentStep | None
+    post_deterministic: list[dict[str, Any]] = field(default_factory=list)
+    on_outcome: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -101,24 +104,44 @@ def normalize_run(run: Any) -> list[dict[str, Any]]:
     return steps
 
 
-def split_steps(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Split steps into deterministic ones and (at most one) agent step.
+def split_steps(
+    steps: list[dict[str, Any]],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+]:
+    """Split steps into pre-agent, the agent, post-agent, and on_outcome.
 
-    Deterministic steps must precede the agent step.
+    ``labels``/``shell`` steps may appear on either side of the agent (pre or
+    post) in any order. ``on_outcome`` must follow the agent (it reads the
+    outcome file the agent writes) and must be last. At most one agent step and
+    one ``on_outcome`` step are supported.
     """
-    deterministic: list[dict[str, Any]] = []
+    pre: list[dict[str, Any]] = []
     agent: dict[str, Any] | None = None
+    post: list[dict[str, Any]] = []
+    on_outcome: dict[str, Any] | None = None
     for step in steps:
         kind = next(iter(step))
         if kind in DETERMINISTIC_KINDS:
+            if on_outcome is not None:
+                raise ConfigError("labels/shell steps must come before on_outcome")
+            (post if agent is not None else pre).append(step)
+        elif kind in AGENT_KINDS:
             if agent is not None:
-                raise ConfigError("deterministic steps must come before the agent step")
-            deterministic.append(step)
-        else:
-            if agent is not None:
-                raise ConfigError("only one agent step per rule is supported in v1")
+                raise ConfigError("only one agent step per rule is supported")
             agent = step
-    return deterministic, agent
+        elif kind in POST_KINDS:
+            if agent is None:
+                raise ConfigError("on_outcome step must come after the agent step")
+            if on_outcome is not None:
+                raise ConfigError("only one on_outcome step per rule is supported")
+            on_outcome = step
+        else:  # pragma: no cover - normalize_run rejects unknown kinds first
+            raise ConfigError(f"unknown step kind '{kind}'")
+    return pre, agent, post, on_outcome
 
 
 def _step_value(agent_step: dict[str, Any]) -> tuple[str, Any]:
@@ -183,12 +206,13 @@ def flatten_rules(
             steps = normalize_run(rule_raw.get("run"))
             if not steps:
                 raise ConfigError(f"rule '{rid}' has no steps")
-            deterministic, agent_step = split_steps(steps)
+            deterministic, agent_step, post_steps, outcome_step = split_steps(steps)
             agent = (
                 build_agent(agent_step, defaults, base_model, base_agents_repo)
                 if agent_step
                 else None
             )
+            on_outcome = normalize_on_outcome(outcome_step) if outcome_step else None
             rules.append(
                 Rule(
                     id=str(rid),
@@ -196,6 +220,8 @@ def flatten_rules(
                     when=when,
                     deterministic=deterministic,
                     agent=agent,
+                    post_deterministic=post_steps,
+                    on_outcome=on_outcome,
                 )
             )
     return rules
@@ -211,7 +237,7 @@ def matches(when: When, event_name: str, payload: dict[str, Any]) -> bool:
     if when.action is not None and when.action != payload.get("action"):
         return False
     if when.label is not None:
-        label_name = ((payload.get("label") or {}).get("name"))
+        label_name = (payload.get("label") or {}).get("name")
         if when.label != label_name:
             return False
     if when.merged is not None:
@@ -249,6 +275,53 @@ def normalize_label_step(step: dict[str, Any]) -> dict[str, Any]:
     return {"labels": {"add": list(add), "remove": list(remove), "target": target}}
 
 
+def normalize_action(action: Any, case_key: str) -> dict[str, Any]:
+    """Normalize one verdict action inside an ``on_outcome`` mapping.
+
+    The label operation uses the same shape as a ``labels`` step:
+    ``{labels: {add: [...], remove: [...], target: subject | linked-issue}}``.
+    """
+    if action is None:
+        action = {}
+    if not isinstance(action, dict):
+        raise ConfigError(f"on_outcome case '{case_key}' must be a mapping")
+    labels_body = action.get("labels")
+    if labels_body is None:
+        labels = {"add": [], "remove": [], "target": "subject"}
+    elif isinstance(labels_body, dict):
+        labels = normalize_label_step({"labels": labels_body})["labels"]
+    else:
+        raise ConfigError(f"on_outcome case '{case_key}' labels must be a mapping")
+    close = action.get("close", False)
+    if not isinstance(close, bool):
+        raise ConfigError(f"on_outcome case '{case_key}' close must be a boolean")
+    comment = action.get("comment")
+    if comment is not None and not isinstance(comment, str):
+        raise ConfigError(f"on_outcome case '{case_key}' comment must be a string")
+    return {"labels": labels, "close": close, "comment": comment}
+
+
+def normalize_on_outcome(step: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize an ``on_outcome`` step into {cases, default}.
+
+    Each key (besides the optional ``_`` default) is a verdict string mapped to
+    an action. The ``_`` key is the fallback used when no case matches.
+    """
+    body = step.get("on_outcome")
+    if not isinstance(body, dict) or not body:
+        raise ConfigError("on_outcome must be a non-empty mapping of verdict -> action")
+    cases: dict[str, dict[str, Any]] = {}
+    default: dict[str, Any] | None = None
+    for key, action in body.items():
+        if key == "_":
+            default = normalize_action(action, "_")
+        else:
+            cases[str(key)] = normalize_action(action, str(key))
+    if not cases:
+        raise ConfigError("on_outcome needs at least one verdict case besides '_'")
+    return {"cases": cases, "default": default}
+
+
 def agent_to_dict(agent: AgentStep) -> dict[str, Any]:
     return {
         "kind": agent.kind,
@@ -260,16 +333,19 @@ def agent_to_dict(agent: AgentStep) -> dict[str, Any]:
 
 
 def rule_to_matrix(rule: Rule) -> dict[str, Any]:
-    deterministic = [
-        normalize_label_step(s) if "labels" in s else s for s in rule.deterministic
-    ]
+    deterministic = [normalize_label_step(s) if "labels" in s else s for s in rule.deterministic]
+    post = [normalize_label_step(s) if "labels" in s else s for s in rule.post_deterministic]
     return {
         "id": rule.id,
         "flow": rule.flow,
         "has_deterministic": len(deterministic) > 0,
         "has_agent": rule.agent is not None,
+        "has_post_deterministic": len(post) > 0,
+        "has_on_outcome": rule.on_outcome is not None,
         "deterministic": deterministic,
+        "post_deterministic": post,
         "agent": agent_to_dict(rule.agent) if rule.agent else None,
+        "on_outcome": rule.on_outcome,
     }
 
 

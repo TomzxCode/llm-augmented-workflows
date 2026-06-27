@@ -1,6 +1,6 @@
 # LLM Augmented Workflows
 
-A config-driven automation engine for GitHub, powered by opencode. Describe your flows in one `flows.yml` file; the dispatcher routes GitHub events to the right agent skills (and deterministic label/shell steps). No per-flow workflow files, no copied boilerplate.
+A config-driven automation engine for GitHub, powered by opencode. Describe your flows in one `flows.yml` file; the dispatcher routes GitHub events to the right agent skills (and token-free label/shell steps). No per-flow workflow files, no copied boilerplate.
 
 ## How it works
 
@@ -8,10 +8,11 @@ A config-driven automation engine for GitHub, powered by opencode. Describe your
 GitHub event (issue labeled, PR merged, comment, ...)
    |
    v
-dispatch.yml  reads flows.yml  ->  route.py matches rule(s)
+dispatch.yml  reads flows.yml  ->  route matches rule(s)
    |
    v
-per matched rule: deterministic steps (labels/shell), then opencode skill
+for each matched rule, run-rule runs its whole `run` in one pass:
+   labels/shell (pre) -> skill (opencode) -> labels/shell (post) -> on_outcome
    |
    v
 the agent acts on GitHub (relabel, comment, open PR, close) -> emits new events
@@ -22,8 +23,8 @@ State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal o
 ## Features
 
 - **One config file** (`.github/llmaw/flows.yml`) defines every flow as event-matched rules.
-- **Ordered steps** per rule: `labels`, `shell` (deterministic, token-free) and `skill`, `prompt` (opencode agents).
-- **Deterministic transitions** like relabeling cost zero tokens.
+- **Ordered pipeline** per rule: `labels`/`shell` (token-free, before or after the agent), `skill`/`prompt` (opencode agents), and `on_outcome` (routes the agent's verdict to labels/close/comment).
+- **Token-free transitions** like relabeling (the `labels` step) cost zero tokens.
 - **opencode skills** are sourced from a configurable agents repository (default `tomzx/agents`).
 - **Reusable workflow** with ref pinning for safe org-wide rollout.
 
@@ -117,11 +118,14 @@ See [`docs/flows.md`](docs/flows.md) for the full schema and recipes (triage, cl
   pr-description-template.md
 src/llm_augmented_workflows/   the engine (installed as the `llmaw` CLI)
   engine.py             loader, matcher, step resolver (pure, unit-tested)
-  route.py              event -> matched rules (matrix)
-  run_steps.py          runs deterministic labels/shell steps
+  route.py              event -> matched rules
+  run_steps.py          applies labels/shell steps (shared helper)
+  apply_outcome.py      maps an agent's verdict to labels/close/comment
+  run_rule.py           drives a rule's whole run: pre -> agent -> post -> on_outcome
   sync_labels.py        creates/updates labels from flows.yml
-  cli.py                `llmaw route | run-steps | sync-labels`
+  cli.py                `llmaw route | run-rule | run-steps | apply-outcome | sync-labels`
 tests/test_engine.py    unit tests
+tests/test_run_rule.py  pipeline-ordering tests
 examples/               example deterministic shell transitions
 docs/flows.md           authoring guide + recipes
 pyproject.toml          package + tooling (uv, hatchling, pytest, ruff)

@@ -9,7 +9,6 @@ defaults:        # applied to every agent step unless overridden
   model: opencode/deepseek-v4-flash-free
   agents_repository: tomzx/agents
   timeout_minutes: 30
-  permissions: skip
 
 labels:          # created/updated by the setup-labels workflow
   - name: feature-request
@@ -44,12 +43,13 @@ All specified fields are ANDed. Omit a field to wildcard it.
 
 | Step | Effect | Tokens |
 |------|--------|--------|
-| `labels` | add/remove labels (deterministic) | none |
-| `shell` | run a shell script (deterministic) | none |
+| `labels` | add/remove labels | none |
+| `shell` | run a shell script | none |
 | `skill` | `opencode run --command <name>` from the agents repo | yes |
 | `prompt` | run opencode with a local prompt file's contents | yes |
+| `on_outcome` | after the agent, switch on its emitted verdict to apply labels/close/comment | none |
 
-Deterministic steps run first (in listed order), then the agent step. One agent step per rule; chain more by emitting a label and matching it with another rule.
+`run` is an ordered pipeline. `labels`/`shell` may appear on either side of the agent (pre or post); the only hard rule is that `on_outcome` must follow the agent (it reads `$OUTCOME_YAML` the agent writes) and come last. Execution order is: pre `labels`/`shell` → agent → post `labels`/`shell` → `on_outcome`. Post-steps run only if the agent succeeded, so they're the right place to consume a label after the skill that matched it. One agent step per rule; chain more by emitting a label and matching it with another rule.
 
 ### `labels`
 
@@ -76,6 +76,35 @@ Deterministic steps run first (in listed order), then the agent step. One agent 
 ```
 
 Model and agents-repository resolve as: step override > `defaults` > workflow input > repo variable (`OPENCODE_MODEL`, `AGENTS_REPOSITORY`) > hardcoded default.
+
+### `on_outcome`
+
+A post-agent step. The skill, as its final action, writes a YAML file to the path in `$OUTCOME_YAML` (set by the dispatcher):
+
+```yaml
+# $OUTCOME_YAML
+verdict: approved        # the value the cases below switch on
+reason: ...
+```
+
+`on_outcome` maps each `verdict` value to an action. The optional `_` key is the fallback when no case matches. An action may carry a `labels` operation (same `{add, remove, target: subject | linked-issue}` shape as a `labels` step), `close` the subject, and/or post a `comment`.
+
+```yaml
+run:
+  - skill: create-needs-assessment
+  - on_outcome:
+      approved:   { labels: { add: [llmaw:needs-approved] } }
+      rejected:   { close: true, comment: "Closing as wontfix." }
+      needs-info: { labels: { add: [llmaw:needs-info] } }
+      _:          { comment: "No verdict produced; needs review." }
+```
+
+Rules:
+
+- `on_outcome` must follow the agent step and reads `$OUTCOME_YAML` from the same run.
+- A missing/invalid outcome file yields `verdict: unknown`; only the `_` case (if any) applies.
+- At least one verdict case (besides `_`) is required.
+- Skills stay label-agnostic: they emit a domain verdict; the verdict-to-label mapping lives here.
 
 ## Recipes
 
@@ -113,6 +142,7 @@ flows:
 ## Notes
 
 - The engine is stateless. State lives in GitHub (labels, PRs, issues).
-- Zero matches is a no-op; the `run-rule` job is skipped.
-- A config error (bad step, unknown kind, rule without steps) fails the `route` job fast instead of misrouting.
+- Each matched rule runs in one pass: pre `labels`/`shell` → agent → post `labels`/`shell` → `on_outcome`.
+- Zero matches is a no-op; the `Run matched rules` step is skipped.
+- A config error (bad step, unknown kind, rule without steps) fails fast at the route step instead of misrouting.
 - Dry-run any rule manually from the Actions tab via the dispatcher's `rule-id` input.
