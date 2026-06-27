@@ -21,9 +21,96 @@ AGENT_KINDS: tuple[str, ...] = ("skill", "prompt")
 POST_KINDS: tuple[str, ...] = ("on_outcome",)
 ALL_KINDS: tuple[str, ...] = DETERMINISTIC_KINDS + AGENT_KINDS + POST_KINDS
 
+EXECUTION_MODES: tuple[str, ...] = ("event-driven", "continuous")
+DEFAULT_EXECUTION = "event-driven"
+NEEDS_HUMAN_LABEL = "llmaw:needs-human"
+
 
 class ConfigError(Exception):
     """Raised when ``flows.yml`` is structurally invalid."""
+
+
+def parse_execution(raw: Any) -> str:
+    """Normalize an execution mode value.
+
+    Returns one of :data:`EXECUTION_MODES`. ``None`` resolves to the default.
+    """
+    if raw is None:
+        return DEFAULT_EXECUTION
+    if not isinstance(raw, str):
+        raise ConfigError(
+            f"execution must be a string in {EXECUTION_MODES}, got {raw!r}"
+        )
+    value = raw.strip().lower()
+    if value not in EXECUTION_MODES:
+        raise ConfigError(f"execution must be one of {EXECUTION_MODES}, got {raw!r}")
+    return value
+
+
+def resolve_execution_for_flow(
+    flows_raw: dict[str, Any], flow_name: str, override: str | None
+) -> str:
+    """Resolve the execution mode for a single flow.
+
+    ``override`` (from a workflow input / repo variable) wins when it is a valid
+    mode. Otherwise the flow's own ``execution`` is consulted, then
+    ``defaults.execution``, then the hardcoded default.
+    """
+    if override in EXECUTION_MODES:
+        return override
+    flows = flows_raw.get("flows") or {}
+    flow_body = flows.get(flow_name)
+    if isinstance(flow_body, dict) and flow_body.get("execution") is not None:
+        return parse_execution(flow_body.get("execution"))
+    defaults = flows_raw.get("defaults") or {}
+    if isinstance(defaults, dict) and defaults.get("execution") is not None:
+        return parse_execution(defaults.get("execution"))
+    return DEFAULT_EXECUTION
+
+
+def resolve_dispatch_execution(
+    flows_raw: dict[str, Any], rules: list[Rule], override: str | None
+) -> str:
+    """Pick a single execution mode for a dispatch run.
+
+    A forced ``override`` applies to the whole run. Otherwise each matched
+    rule's flow is resolved independently; if any flow is continuous the run is
+    continuous (the richer behavior), else it is event-driven. A run with no
+    matched rules is event-driven.
+    """
+    if override in EXECUTION_MODES:
+        return override
+    if not rules:
+        return DEFAULT_EXECUTION
+    modes = {resolve_execution_for_flow(flows_raw, r.flow, None) for r in rules}
+    return "continuous" if "continuous" in modes else DEFAULT_EXECUTION
+
+
+def find_next_rules(rules: list[Rule], new_labels: list[str]) -> list[Rule]:
+    """Return issue-labeled rules whose trigger label is in ``new_labels``.
+
+    Continuous mode uses this to decide what to run next based on the labels a
+    previous rule just added. Only rules gated on an ``issues`` ``labeled``
+    event with an explicit ``label`` are considered, so event-agnostic rules and
+    PR/comment rules are never auto-chained. Other ``when`` fields
+    (``body_contains`` etc.) are ignored: continuous chaining keys on the label
+    alone.
+    """
+    if not new_labels:
+        return []
+    wanted = set(new_labels)
+    found: list[Rule] = []
+    for rule in rules:
+        w = rule.when
+        if w.event not in (None, "issues"):
+            continue
+        if w.action not in (None, "labeled"):
+            continue
+        if w.label is None:
+            continue
+        if w.label in wanted:
+            found.append(rule)
+    return found
 
 
 @dataclass(frozen=True)

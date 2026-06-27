@@ -12,6 +12,7 @@ from llm_augmented_workflows.engine import (
     When,
     build_agent,
     compute_label_diff,
+    find_next_rules,
     flatten_rules,
     load_flows,
     matches,
@@ -19,7 +20,10 @@ from llm_augmented_workflows.engine import (
     normalize_label_step,
     normalize_on_outcome,
     normalize_run,
+    parse_execution,
     parse_when,
+    resolve_dispatch_execution,
+    resolve_execution_for_flow,
     rule_to_matrix,
     split_steps,
 )
@@ -286,6 +290,113 @@ def test_parse_when_coerces_merged():
     assert parse_when({"merged": True}).merged is True
     assert parse_when({"merged": False}).merged is False
     assert parse_when({}).merged is None
+
+
+# --------------------------------------------------------------------------- #
+# execution mode
+# --------------------------------------------------------------------------- #
+def test_parse_execution_accepts_known_and_defaults():
+    assert parse_execution(None) == "event-driven"
+    assert parse_execution("continuous") == "continuous"
+    assert parse_execution("  Event-Driven ") == "event-driven"
+
+
+def test_parse_execution_rejects_unknown():
+    with pytest.raises(ConfigError):
+        parse_execution("async")
+    with pytest.raises(ConfigError):
+        parse_execution(5)
+
+
+def test_resolve_execution_for_flow_precedence():
+    raw = {
+        "defaults": {"execution": "continuous"},
+        "flows": {
+            "a": {"execution": "event-driven"},
+            "b": {},
+            "c": {"execution": "continuous"},
+        },
+    }
+    # flow override beats defaults
+    assert resolve_execution_for_flow(raw, "a", None) == "event-driven"
+    # defaults apply when flow is silent
+    assert resolve_execution_for_flow(raw, "b", None) == "continuous"
+    # explicit flow continuous
+    assert resolve_execution_for_flow(raw, "c", None) == "continuous"
+    # forced override beats everything
+    assert resolve_execution_for_flow(raw, "a", "continuous") == "continuous"
+    assert resolve_execution_for_flow(raw, "c", "event-driven") == "event-driven"
+    # missing flow falls back to defaults
+    assert resolve_execution_for_flow(raw, "missing", None) == "continuous"
+
+
+def test_resolve_dispatch_execution_continuous_wins_and_override_forces():
+    raw = {"flows": {"a": {"execution": "event-driven"}, "b": {"execution": "continuous"}}}
+    ra = type("R", (), {"flow": "a"})()
+    rb = type("R", (), {"flow": "b"})()
+    # mixed -> continuous
+    assert resolve_dispatch_execution(raw, [ra, rb], None) == "continuous"
+    # all event-driven -> event-driven
+    assert resolve_dispatch_execution(raw, [ra], None) == "event-driven"
+    # override forces regardless
+    assert resolve_dispatch_execution(raw, [rb], "event-driven") == "event-driven"
+    # no rules -> event-driven
+    assert resolve_dispatch_execution(raw, [], None) == "event-driven"
+
+
+# --------------------------------------------------------------------------- #
+# find_next_rules (continuous chaining)
+# --------------------------------------------------------------------------- #
+def _rules_from(text: str, tmp_path):
+    path = write_flows(tmp_path, text)
+    return flatten_rules(load_flows(path), "m", "r")
+
+
+def test_find_next_rules_matches_new_labels(tmp_path):
+    rules = _rules_from(
+        """
+        flows:
+          f:
+            rules:
+              - id: needs-create
+                when: {event: issues, action: labeled, label: llmaw:feature-request}
+                run: [{skill: x}]
+              - id: needs-review
+                when: {event: issues, action: labeled, label: llmaw:review-needs}
+                run: [{skill: y}]
+              - id: on-merge
+                when: {event: pull_request, action: closed, merged: true}
+                run: [{labels: {add: [llmaw:plan-approved]}}]
+        """,
+        tmp_path,
+    )
+    nxt = find_next_rules(rules, ["llmaw:feature-request"])
+    assert [r.id for r in nxt] == ["needs-create"]
+    # empty new_labels short-circuits
+    assert find_next_rules(rules, []) == []
+
+
+def test_find_next_rules_skips_non_issue_and_event_agnostic(tmp_path):
+    rules = _rules_from(
+        """
+        flows:
+          f:
+            rules:
+              - id: pr-merge
+                when: {event: pull_request, action: closed, label: llmaw:x}
+                run: [{labels: {add: [llmaw:y]}}]
+              - id: opened
+                when: {event: issues, action: opened}
+                run: [{skill: z}]
+              - id: labeled-x
+                when: {event: issues, action: labeled, label: llmaw:x}
+                run: [{skill: q}]
+        """,
+        tmp_path,
+    )
+    # PR rule and event-agnostic opened rule are never chained
+    nxt = find_next_rules(rules, ["llmaw:x"])
+    assert [r.id for r in nxt] == ["labeled-x"]
 
 
 # --------------------------------------------------------------------------- #

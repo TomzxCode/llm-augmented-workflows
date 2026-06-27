@@ -17,7 +17,14 @@ import os
 import sys
 from pathlib import Path
 
-from .engine import ConfigError, flatten_rules, load_flows, matches, rule_to_matrix
+from .engine import (
+    ConfigError,
+    flatten_rules,
+    load_flows,
+    matches,
+    resolve_dispatch_execution,
+    rule_to_matrix,
+)
 
 log = logging.getLogger("route")
 
@@ -63,16 +70,23 @@ def main() -> int:
 
     matrix = [rule_to_matrix(r) for r in rules]
 
+    override = (os.environ.get("EXECUTION") or "").strip().lower()
+    if override not in ("continuous", "event-driven"):
+        override = ""
+    execution = resolve_dispatch_execution(flows_raw, rules, override)
+
     _write_output("matched", json.dumps(matrix))
     _write_output("count", str(len(matrix)))
     _write_output("has_agent", str(any(m.get("has_agent") for m in matrix)))
+    _write_output("execution", execution)
     matched_file = os.environ.get("MATCHED_FILE")
     if matched_file:
         Path(matched_file).write_text(json.dumps(matrix))
 
     log.info(
-        "event=%s matched=%s",
+        "event=%s execution=%s matched=%s",
         event_name or "(none)",
+        execution,
         [m["id"] for m in matrix] or "none",
     )
     return 0

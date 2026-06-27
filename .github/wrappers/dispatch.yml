@@ -27,6 +27,10 @@ on:
         description: "Ref of the engine repository to check out. Leave empty for default (main)."
         required: false
         type: string
+      execution:
+        description: "Force execution mode: 'continuous' (chain rules in one job until needs-human) or 'event-driven' (one rule per dispatch). Empty resolves from flows.yml."
+        required: false
+        type: string
       rule-id:
         description: "Dry-run: force-run a single rule by id (skips event matching)."
         required: false
@@ -47,6 +51,7 @@ jobs:
       agents-repository: ${{ inputs.agents-repository }}
       framework-repository: ${{ inputs.framework-repository }}
       framework-ref: ${{ inputs.framework-ref }}
+      execution: ${{ inputs.execution }}
       rule-id: ${{ inputs.rule-id }}
     secrets:
       LLMAW_APP_PRIVATE_KEY: ${{ secrets.LLMAW_APP_PRIVATE_KEY }}

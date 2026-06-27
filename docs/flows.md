@@ -9,6 +9,7 @@ defaults:        # applied to every agent step unless overridden
   model: opencode/deepseek-v4-flash-free
   agents_repository: tomzx/agents
   timeout_minutes: 30
+  execution: event-driven   # or "continuous"
 
 labels:          # created/updated by the setup-labels workflow
   - name: feature-request
@@ -106,6 +107,63 @@ Rules:
 - At least one verdict case (besides `_`) is required.
 - Skills stay label-agnostic: they emit a domain verdict; the verdict-to-label mapping lives here.
 
+## Execution modes
+
+The dispatcher runs each matched rule's pipeline (pre → agent → post → `on_outcome`) in one job. What happens **after** that pipeline is governed by the execution mode:
+
+| Mode | Behavior |
+|------|----------|
+| `event-driven` (default) | The rule runs once, then the job ends. The `on_outcome` relabel emits a new `issues:labeled` event, which re-triggers the dispatcher for the next phase. Each phase is its own GitHub Actions job. |
+| `continuous` | After the seed rule(s) finish, the same job re-reads the issue's labels, finds the rule whose `when.label` matches a **newly added** label, runs it, and repeats until a terminal condition is hit. The whole pipeline runs in a single job. |
+
+### Choosing the mode
+
+Resolution order (first wins):
+
+1. Workflow `execution` input, or the `LLMAW_EXECUTION` repo/org variable (`continuous` or `event-driven`).
+2. `flows.<name>.execution` for the matched rule's flow.
+3. `defaults.execution`.
+4. `event-driven`.
+
+```yaml
+defaults:
+  execution: continuous      # default for every flow
+flows:
+  feature:
+    execution: continuous    # or set it per flow
+    rules: [...]
+  review:
+    execution: event-driven  # opt a flow back out
+    rules: [...]
+```
+
+Force a mode for one dispatch from the Actions tab (the dispatcher's `execution` input) or a repo variable:
+
+```yaml
+# repo variable
+LLMAW_EXECUTION = continuous
+```
+
+### How continuous mode picks the next rule
+
+After each rule's `on_outcome` runs, the engine fetches the issue's current labels and computes the set that was **added** since the previous iteration. It then looks for a rule with `when: { event: issues, action: labeled, label: <one of the new labels> }` and runs it. PR/comment/merge rules and event-agnostic rules are never auto-chained (the chain keys on the issue label state-machine only).
+
+This means:
+
+- A rule that opens a PR (e.g. `create-plan`, whose `on_outcome: approved: {}` adds no label) **naturally ends the loop** — the chain resumes in a later dispatch when the PR merges and relabels the linked issue.
+- Each phase must add the label its successor matches, exactly as it already does for event-driven chaining. No config change is needed to the rules themselves.
+
+### Stopping the loop
+
+The continuous loop stops when:
+
+- `llmaw:needs-human` is present on the issue, or
+- a rule adds no new label, or
+- the newly-added label(s) match no rule, or
+- the iteration cap is reached (default 30, overridable via the `LLMAW_MAX_ITERATIONS` repo variable).
+
+Continuous mode only loops for **issue** subjects. PR/comment subjects run their seed rule once without looping; any relabel they cause on a linked issue triggers its own dispatch (which will itself be continuous).
+
 ## Recipes
 
 ### Feature request triage with go/no-go
@@ -143,6 +201,7 @@ flows:
 
 - The engine is stateless. State lives in GitHub (labels, PRs, issues).
 - Each matched rule runs in one pass: pre `labels`/`shell` → agent → post `labels`/`shell` → `on_outcome`.
+- In `continuous` mode that pass repeats in the same job, advancing on each newly-added label until `needs-human` or a resting state (see [Execution modes](#execution-modes)).
 - Zero matches is a no-op; the `Run matched rules` step is skipped.
 - A config error (bad step, unknown kind, rule without steps) fails fast at the route step instead of misrouting.
 - Dry-run any rule manually from the Actions tab via the dispatcher's `rule-id` input.

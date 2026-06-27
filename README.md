@@ -20,10 +20,20 @@ the agent acts on GitHub (relabel, comment, open PR, close) -> emits new events
 
 State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal outcomes emerge naturally: an agent closes an issue (won't fix), or a PR merges and an `on-merge` rule closes the linked issue.
 
+### Execution modes
+
+Each matched rule's pipeline runs in one job. Two modes control what happens after that pipeline:
+
+- **event-driven** (default): the rule runs once and the job ends; the relabel emits a new event that re-triggers the dispatcher for the next phase (one job per phase).
+- **continuous**: the same job keeps advancing to the next rule based on the labels each rule adds, until `llmaw:needs-human` appears or the chain reaches a resting state (one job per pipeline).
+
+Set it under `defaults.execution` / `flows.<name>.execution`, force it per-dispatch via the `execution` input or the `LLMAW_EXECUTION` repo variable. See [`docs/flows.md`](docs/flows.md#execution-modes) for details.
+
 ## Features
 
 - **One config file** (`.github/llmaw/flows.yml`) defines every flow as event-matched rules.
 - **Ordered pipeline** per rule: `labels`/`shell` (token-free, before or after the agent), `skill`/`prompt` (opencode agents), and `on_outcome` (routes the agent's verdict to labels/close/comment).
+- **Two execution modes**: `event-driven` (one job per phase) or `continuous` (one job per pipeline, chaining rules until `needs-human`).
 - **Token-free transitions** like relabeling (the `labels` step) cost zero tokens.
 - **opencode skills** are sourced from a configurable agents repository (default `tomzx/agents`).
 - **Reusable workflow** with ref pinning for safe org-wide rollout.
@@ -55,6 +65,8 @@ State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal o
 3. (Optional) Set repo/org variables to override the defaults:
    - `OPENCODE_MODEL` - opencode model id (default `opencode/deepseek-v4-flash-free`)
    - `AGENTS_REPOSITORY` - skills repo as `owner/repo` (default `tomzx/agents`)
+   - `LLMAW_EXECUTION` - `continuous` or `event-driven` (default resolves from `flows.yml`, ultimately `event-driven`)
+   - `LLMAW_MAX_ITERATIONS` - iteration cap for continuous mode (default `30`)
 
 4. Create the labels declared under `labels:` by running the **Setup Labels** workflow, or let your flows add them as needed.
 
@@ -101,7 +113,9 @@ See [`docs/flows.md`](docs/flows.md) for the full schema and recipes (triage, cl
 |---------|---------|-------------|
 | `OPENCODE_MODEL` | `opencode/deepseek-v4-flash-free` | opencode model id (provider/model) |
 | `AGENTS_REPOSITORY` | `tomzx/agents` | repository providing skills |
-| `flows.yml` `defaults` | - | per-flow overrides for model/agents-repo/timeout |
+| `LLMAW_EXECUTION` | `event-driven` | force `continuous` or `event-driven` (else resolved from `flows.yml`) |
+| `LLMAW_MAX_ITERATIONS` | `30` | iteration cap for continuous mode |
+| `flows.yml` `defaults` | - | per-flow overrides for model/agents-repo/timeout/execution |
 
 ## Project structure
 

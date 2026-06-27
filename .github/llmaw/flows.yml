@@ -77,6 +77,8 @@ defaults:
   model: opencode/deepseek-v4-flash-free   # opencode model id (provider/model)
   agents_repository: tomzx/agents          # repo providing skills, cloned at runtime
   timeout_minutes: 30
+  # execution: event-driven                 # or "continuous": chain rules in one job
+                                            # until llmaw:needs-human (see docs/flows.md)
 
 # Labels auto-created/updated by the setup-labels workflow.
 labels:
@@ -197,6 +199,7 @@ flows:
 
   feature:
     description: Full SDLC pipeline; each phase drafts (create-*) then gates (review-*).
+    execution: event-driven
     rules:
       # --- Stage: needs validation ---
       - id: feat-needs-create
@@ -475,6 +478,7 @@ flows:
 
   bugfix:
     description: SDLC bug-fix fast path (check-duplicates -> reproduce -> fix -> PR).
+    execution: event-driven
     rules:
       - id: bug-duplicates
         when: { event: issues, action: labeled, label: llmaw:bug }
