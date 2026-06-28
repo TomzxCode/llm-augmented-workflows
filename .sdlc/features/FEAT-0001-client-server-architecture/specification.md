@@ -1,7 +1,7 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: in-review
+status: approved
 revision: 4
 ---
 
@@ -22,8 +22,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server that
 │  │  (ASGI)      │     │                  │     │  - Raw body       │  │
 │  │              │     │  /webhook (POST) │     │  - Structured log │  │
 │  │              │     │  /health   (GET) │     └──────────────────┘  │
-│  │              │     └──────────────────┘              │            │
-│  └──────────────┘                                       │            │
+│  └──────────────┘     └──────────────────┘              │            │
 │                                                         ▼            │
 │                                              ┌────────────────────┐  │
 │                                              │ HMAC Verifier      │  │
