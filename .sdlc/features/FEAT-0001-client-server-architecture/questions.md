@@ -11,6 +11,10 @@ source: needs-assessment.md
 4. How should skill files be distributed in the server model — cloned at container start, mounted as a volume, or fetched on first use? This affects startup time and Docker image size.
 5. Does the server need a `FORCE_RULE_ID`-like bypass (e.g., for admin API testing), or is that only relevant to the GitHub Actions workflow dispatch path?
 
+6. How should unsupported GitHub event types (e.g., `star`, `member`) be handled by the webhook endpoint — accepted with 200 and skipped, or rejected with 400?
+7. What is the expected schema of `versions.yaml` for canary deployment configuration (model identifier, prompt template, skill repo reference, max iteration count)?
+8. Should the POST/PATCH /admin/repositories response include `version` and `created_at` for consistency with the GET list response?
+
 ## Resolved
 
 - Session state persistence (was Q3 in requirements): resolved to local disk (SQLite) with Docker volume mount, per conflict resolution in requirements.md.
