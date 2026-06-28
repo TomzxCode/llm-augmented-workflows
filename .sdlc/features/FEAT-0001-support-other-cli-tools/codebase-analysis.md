@@ -1,8 +1,8 @@
 ---
 issue: "#18"
 title: "Support other harness CLI"
-status: in-review
-revision: 2
+status: approved
+revision: 3
 ---
 
 # Codebase Analysis: Support Other Harness CLI
@@ -19,10 +19,10 @@ The engine (`llmaw`) is a single-executable Python CLI that routes GitHub events
 |---|---|
 | Read all source files | `src/llm_augmented_workflows/{engine,run_rule,run_steps,apply_outcome,route,cli,sync_labels}.py` |
 | Read test files | `tests/{test_engine,test_run_rule}.py` |
-| Read workflow definitions | `.github/workflows/dispatch.yml`, `.github/wrappers/dispatch.yml` |
+| Read workflow definitions | `.github/workflows/dispatch.yml` |
 | Read documentation | `docs/flows.md` |
 
-**Out of scope:** The `shell` step type (not being modified), the reusable workflow caller (`.github/wrappers/dispatch.yml` is a thin passthrough), and the skills repository (`tomzx/agents`).
+**Out of scope:** The `shell` step type (not being modified), the reusable workflow caller (`.github/wrappers/dispatch.yml`), and the skills repository (`tomzx/agents`).
 
 ## Relevant Existing Components
 
