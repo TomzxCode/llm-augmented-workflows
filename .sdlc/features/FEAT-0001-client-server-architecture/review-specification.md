@@ -6,27 +6,25 @@ reviewed_at: 2026-06-28
 
 ## Ambiguities
 
-**Session TTL environment variable naming.** The session expiry paragraph references `SESSION_TTL_HOURS` as the configurable value ("compares `updated_at` against `SESSION_TTL_HOURS` (configurable, default 168)") but then immediately states "The `SESSIONS_MAX_AGE_HOURS` environment variable overrides the default TTL." It is unclear whether these are aliases for the same variable, one is the code constant and the other the env var override, or this is a naming inconsistency. An implementer cannot tell which name to use.
+**`auth_type` and `gh_token_expires_at` field handling in admin API.** The spec states these are accepted as optional fields in `POST /admin/repositories` and `PATCH /admin/repositories/{owner}/{repo}` (line 105), but they are not listed in the documented request body schemas (lines 349-357 and 421-427). It is unclear whether these are first-class fields with dedicated columns or stored in `repositories.metadata` alongside user-provided extension fields. The defaulting behavior (`auth_type` defaults to `"pat"`) suggests special handling, but the schema tables don't reflect this.
+
+**`refresh_failure_count` counter reset.** The spec says the counter is incremented on refresh failures and after 3 consecutive failures the repo is deactivated (line 104). It does not specify when or how the counter is reset (e.g., on a successful refresh), nor what "consecutive" means — across what time window? A repo with a history of failures could remain permanently deactivated even after the underlying issue is resolved.
 
 ## Inconsistencies
 
-**`updated_at` missing from repository API responses.** The `repositories` table schema defines `updated_at` (not null), but no admin API response (`GET /admin/repositories`, `GET /admin/repositories/{owner}/{repo}`, `POST /admin/repositories`, `PATCH /admin/repositories/{owner}/{repo}`) includes it. Unlike `secret_token` and `gh_token` (whose exclusion is explicitly documented), `updated_at`'s absence is not addressed.
-
-**`error` field missing from webhook event list responses.** The `webhook_events` table includes a nullable `error` column, but the `GET /admin/events` response schema does not include it, nor is its exclusion documented (the spec only documents that `payload` is excluded).
+**`webhook_events` foreign key behavior.** The data model table for `webhook_events` (lines 168-180) specifies `repo_id` as "FK → repositories.id, not null" but does not mention `ON DELETE CASCADE`. The prose at line 132-133 asserts that `webhook_events` has `ON DELETE CASCADE`. The table definition and the prose are inconsistent — an implementer cannot tell which is correct.
 
 ## Incoherences
 
-**Token encryption key rotation "unset" language.** The spec states "After a successful rotation, `TOKEN_ENCRYPTION_KEY_OLD` is unset and only `TOKEN_ENCRYPTION_KEY` is retained." Environment variables cannot be unset from the deployment environment by a running process without explicit code to clear `os.environ`. If the intent is that this happens at next restart after the operator removes the variable, the wording is misleading. If the intent is that the server clears it from `os.environ` after rotation, this should be stated explicitly.
+No issues found.
 
 ## Missing Information
 
-**GitHub App installation token refresh.** The `gh_token` field stores "GitHub installation token or PAT for outbound API calls." PATs are long-lived, but GitHub App installation tokens expire after 1 hour and must be periodically refreshed. The spec provides no mechanism, endpoint, or guidance for refreshing installation tokens. A production server relying on installation tokens would fail after 1 hour without this.
-
-**No SLA or uptime targets.** The spec defines performance targets (NFR-03: 5s dispatch) and capacity targets (NFR-04: 10 concurrent repos) but does not state any availability SLA, maintenance window policy, or uptime target. Operators have no guidance on expected service level.
+**`repositories.metadata` namespace collision risk.** The `metadata` JSON column serves dual purpose: it stores user-provided extension fields from API requests (line 358) and system-managed operational fields (`auth_type`, `gh_token_expires_at`, `refresh_failure_count`, line 99-104). There is no documented namespace, prefix, or separation convention. A `PATCH /admin/repositories` request that includes a field like `auth_type` would silently overwrite the system-managed value.
 
 ## Implementability
 
-No issues found.
+**Per-session `threading.Lock` lifecycle undefined.** The spec proposes a `threading.Lock` per `(repo_id, subject_type, subject_id)` to serialize writes (line 732), but does not describe how locks are created, stored, looked up, or garbage-collected as sessions expire. Without a cleanup strategy, locks accumulate indefinitely, creating a memory leak.
 
 ## Reversibility
 
