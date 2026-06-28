@@ -1,7 +1,7 @@
 ---
 issue: "#17"
 title: "Implement directly from issue"
-status: approved
+status: in-review
 ---
 
 # Telemetry: Implement directly from issue

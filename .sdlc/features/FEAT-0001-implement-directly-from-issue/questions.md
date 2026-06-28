@@ -33,3 +33,9 @@ Open questions from specification review:
 13. Can `create-implementation` produce output from "issue body + labels only" without modification? The spec should verify this before shipping the express path.
 
 14. How does `defaults.express` config flow to the triage classification logic? No engine component currently reads these keys.
+
+Open questions from telemetry review:
+
+15. How should the token savings metric be computed during ongoing operation when there is no paired full-pipeline run for the same express-path issue? The current comparison methodology requires a counterfactual that does not exist in production.
+
+16. Should upstream infrastructure failures (triage crashes, label application failures, workflow dispatch errors) be instrumented as events in the telemetry plan, or is GitHub Actions run log monitoring sufficient for V1?
