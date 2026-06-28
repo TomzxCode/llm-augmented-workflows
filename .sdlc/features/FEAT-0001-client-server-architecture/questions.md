@@ -12,4 +12,5 @@ source: needs-assessment.md
 ## Resolved
 
 - Session state persistence (was Q3 in requirements): resolved to local disk (SQLite) with Docker volume mount, per conflict resolution in requirements.md.
-- **Env var racing for concurrent multi-repo execution (codebase-analysis Q1):** The analysis identifies this risk but does not resolve it. The server must choose one of: (a) use thread-local storage to isolate env per repo, (b) refactor leaf modules to accept tokens as parameters, or (c) restrict to single-threaded per-repo execution. This must be resolved before implementation.
+- **Env var racing for concurrent multi-repo execution (codebase-analysis Q1):** Resolved via parameter injection with env var fallback (approach b). `run_steps._current_subject()`, `_gh()`, `apply_labels()` and `apply_outcome.apply()` now accept optional parameters for subject context and GH token. The server path passes all context as function parameters; the CLI path uses env var fallback. No env vars are written by the server path, eliminating the race.
+- **`_current_subject()` env var source (codebase-analysis Q2):** Resolved together with Q1 via parameter injection.
