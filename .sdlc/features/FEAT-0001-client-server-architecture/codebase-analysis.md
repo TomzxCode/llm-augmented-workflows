@@ -2,6 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
+revision: 1
 ---
 
 # Codebase Analysis: Client/Server architecture
