@@ -34,8 +34,18 @@ Open questions from specification review:
 
 14. How does `defaults.express` config flow to the triage classification logic? No engine component currently reads these keys.
 
-Open questions from telemetry review:
+Open questions from telemetry review (revision 1):
 
 15. How should the token savings metric be computed during ongoing operation when there is no paired full-pipeline run for the same express-path issue? The current comparison methodology requires a counterfactual that does not exist in production.
 
 16. Should upstream infrastructure failures (triage crashes, label application failures, workflow dispatch errors) be instrumented as events in the telemetry plan, or is GitHub Actions run log monitoring sufficient for V1?
+
+Open questions from telemetry review (revision 2):
+
+17. Should `issue_opened` be defined as a custom analytics event with typed properties, or explicitly documented as a GitHub-native event in the funnel?
+
+18. Should `express_eligibility_set` be renamed to capture both express-eligible and full-pipeline routing outcomes, or should a separate event be created for the ineligible path?
+
+19. Should `full_pipeline_triggered` fire simultaneously with `express_eligibility_set` for ineligible issues, or should one be derived from the other to avoid double-counting?
+
+20. Should `workflow_step_failed` exclude `create-implementation` from its `step_name` values to avoid overlap with `implementation_failed`, or should the failure-mode boundary between the two events be documented explicitly?

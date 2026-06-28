@@ -6,33 +6,26 @@ reviewed_at: 2026-06-28
 
 ## Completeness
 
-**Classification comment posting (FR-05) not instrumented.**
-The specification defines a `comment_on_classification` config (default `true`) that posts the classification rationale as an issue comment. The telemetry has a counter metric for "Classification comment spam" but no event tracks when a classification comment is actually posted. Without an event, the counter metric cannot be computed. Add a `classification_comment_posted` event or clarify how the comment count is derived (e.g., from GitHub issue comments API).
-
-**Label-removal fallback flow not instrumented.**
-The specification describes a flow where a human removes `llmaw:express-eligible` and the issue falls back to the full pipeline. This path has no corresponding event. While this is an edge case, instrumenting it would close a coverage gap. Add an `express_label_removed` event or document why this path is intentionally excluded.
-
-**FR-07 classification breakdown metric missing.**
-The requirement asks for "a breakdown of classifications" (eligible vs. ineligible counts). The adoption rate captures express-path share but not the full classification distribution. Add a success metric for classification breakdown or clarify how the `issue_classified` event data is aggregated.
+**`issue_opened` event referenced but not defined.**
+The user funnel (step 1) lists `issue_opened` as an event, but no corresponding definition exists in the Analytics Events section with typed properties. If this is a GitHub-native event (`issues:opened`), clarify this in the funnel or note it explicitly. If it is intended to be a custom-analytics event, add a definition with properties.
 
 ## Measurability
 
-**Token savings comparison methodology unclear.**
-The metric compares an express run against "comparable full-pipeline run" using a t-test. The spec validates against historical issues, but during ongoing operation there is no counterfactual full-pipeline run for the same issue. Clarify whether the comparison uses a historical baseline, synthetic benchmarks, or is omitted in production and computed only during testing.
-
-No other measurability issues found. All metrics have concrete targets, measurement methods, and timeframes.
+No issues found.
 
 ## Actionability
 
-No issues found. Counter metrics have clear thresholds and investigation triggers. Alert descriptions specify both the condition and the response action. The manual-review approach is appropriate for the expected volume.
+No issues found.
 
 ## Consistency
 
-No issues found. Event names follow `snake_case` and `entity_action_status` convention. Properties are typed with required/optional marked. Terminology (complexity, trigger, verdict) matches the specification.
+**`express_eligibility_set` event name mismatches its scope.**
+The event fires for both express-eligible (`llmaw:express-eligible`) and ineligible (`llmaw:feature-request`) outcomes, but the name `express_eligibility_set` implies only the eligible path. Either rename to something like `routing_decision_made` or note in the event description that it captures both outcomes.
+
+**`full_pipeline_triggered` overlaps with `express_eligibility_set`.**
+When an issue is ineligible, both `full_pipeline_triggered` and `express_eligibility_set` (with `label_applied: llmaw:feature-request`) fire from the same transition. This creates a risk of double-counting. Clarify whether both events are expected to fire simultaneously or whether one should be derived from the other.
 
 ## Coverage Gaps
 
-**Triage and infrastructure failures not instrumented.**
-The telemetry covers implementation failures but not failures in upstream steps: triage-skill crashes (no outcome YAML emitted), label application failures (`gh issue edit` fails), or workflow dispatch errors. While these may be caught by GitHub Actions run logs, they are invisible to the label-based query system. Add events or document that these are monitored via GitHub Actions workflow run logs.
-
-No other coverage gaps found. The label-based infrastructure is sufficient for defined events. Dashboards and alert criteria are specified.
+**`workflow_step_failed` step_name overlaps with `implementation_failed`.**
+The `workflow_step_failed` event lists `create-implementation` as a valid `step_name`, but the `implementation_failed` event already covers failures in the create-implementation step. Clarify which failure mode belongs to which event (e.g., `workflow_step_failed` covers infrastructure failures like crashes/timeouts, while `implementation_failed` covers the skill returning `verdict: failed`). Alternatively, remove `create-implementation` from `workflow_step_failed.step_name` values.
