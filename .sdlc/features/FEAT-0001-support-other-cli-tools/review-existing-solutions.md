@@ -1,7 +1,8 @@
 ---
 artifact: existing-solutions
-verdict: changes-requested
+verdict: approved
 reviewed_at: 2026-06-28
+revision: 2
 ---
 
 ## Coverage
@@ -14,17 +15,13 @@ No issues found.
 
 ## Accuracy
 
-### cli-agent-spec license is MIT, not CC-BY-4.0
+### pluggy star count is overestimated
 
-The candidate table (line 22) and evaluation (line 76) list the cli-agent-spec license as CC-BY-4.0. The actual repository at `github.com/cli-agent-spec/cli-agent-spec` uses an MIT license. This affects license compatibility analysis if the spec's patterns were adopted directly.
+The candidate evaluation (line 92) claims "4.5k+ GitHub stars" for pluggy. The actual count is 1.6k stars (verified at github.com/pytest-dev/pluggy). This overstates pluggy's community size by ~2.8x, though the maturity assessment ("de facto Python plugin framework; used by pytest, tox, devpi") remains correct. Maturity should be evidenced by the 1.1B monthly PyPI downloads (ranked #14 on PyPI) rather than the star count.
 
-### cli-agent-spec GitHub reference is stale
+### flowai-workflow version is stale
 
-The survey references `joelclaw/cli-agent-spec` (line 22), which returns 404. The specification has moved to `cli-agent-spec/cli-agent-spec`. Update the URL to point at the current location.
-
-### opencode-cli-enforcer star count is 0, not ~50
-
-The candidate table (line 33) claims "~50 stars" for opencode-cli-enforcer. The GitHub repository at `lleontor705/opencode-cli-enforcer` shows 0 stars. The single-maintainer claim is correct.
+The evaluation (line 57) states version "0.7.15, April 2026." The latest release is v0.8.4 (June 22, 2026, github.com/korchasa/flowai-workflow/releases). This does not affect the recommendation since flowai is not the chosen path, but version claims should be current to accurately reflect project velocity.
 
 ## Due Diligence
 
