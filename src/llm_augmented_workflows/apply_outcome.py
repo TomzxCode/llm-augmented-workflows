@@ -47,14 +47,32 @@ def outcome_present() -> bool:
     return bool(_read_outcome().get("verdict"))
 
 
+def _run_url() -> str | None:
+    """Actions run URL built from the ``GITHUB_*`` runtime env vars, or ``None``."""
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        return f"{server}/{repo}/actions/runs/{run_id}"
+    return None
+
+
+def _with_run_link(body: str) -> str:
+    """Append a workflow-run footer to a comment body when running in Actions."""
+    url = _run_url()
+    if not url:
+        return body
+    return f"{body}\n\n---\n[Workflow run]({url})"
+
+
 def _post_comment(number: int, kind: str, body: str) -> None:
-    run_steps._gh([kind, "comment", str(number), "--body", body])
+    run_steps._gh([kind, "comment", str(number), "--body", _with_run_link(body)])
 
 
 def _close(number: int, kind: str, comment: str | None) -> None:
     args = [kind, "close", str(number)]
     if comment:
-        args += ["--comment", comment]
+        args += ["--comment", _with_run_link(comment)]
     run_steps._gh(args)
 
 
