@@ -1,7 +1,7 @@
 ---
 issue: "#18"
 title: "Support other harness CLI"
-status: draft
+status: in-review
 ---
 
 # Feasibility Assessment: Support Other Harness CLI
@@ -21,7 +21,7 @@ The engine currently hardcodes `opencode` as the only AI agent runtime for the `
 
 The feature requires no new runtime dependencies beyond Python's stdlib (`subprocess`, `shlex`, `tempfile` for template expansion, `importlib` for parser discovery). The existing architecture is well-positioned: `_run_agent` in `run_rule.py:49-56` is the sole call site, `on_outcome` routing is already decoupled from how the agent ran, and the `shell` step type provides a proven subprocess pattern to follow. Template expansion for `{{prompt_file}}` and `{{env.VAR}}` introduces moderate complexity in escaping and temp file lifecycle management. Verdict parser sandboxing (NFR-03) via environment restriction is feasible without container infrastructure; container-based isolation would be a hardening option for v2.
 
-**Verdict:** Feasible
+**Verdict:** Feasible with conditions
 
 ## Financial Feasibility
 
@@ -58,6 +58,10 @@ The feature is operationally feasible with conditions. The single-maintainer tea
 1. A spike must validate the template expansion design (`{{prompt_file}}` temp file lifecycle, `{{prompt}}` inline substitution for large prompts) before implementation begins.
 2. The verdict parser contract must be documented as a stable subprocess interface (stdin-only, exit-code-based) before any parsers are built, with explicit versioning guidance for future format changes.
 3. NFR-03 sandboxing must start with environment restriction (dropping `GH_TOKEN`, minimal `PATH`) and defer container isolation to a follow-up; the parser interface should be designed so wrapping is transparent.
+
+## Reversibility
+
+This feature is fully reversible. The existing hardcoded `opencode` path is preserved as the default when `agent.command` is unset (NFR-02). All new configuration fields (`command`, `verdict_parser`, `setup`, `env`) have `None` defaults, so existing workflows are unaffected by the code change — they continue to invoke opencode with byte-identical behavior. If the template expansion spike reveals fundamental issues or the verdict parser contract approach proves unworkable, users simply omit the new fields and the engine behaves exactly as before. No migration is required to roll back.
 
 ## Open Questions
 
