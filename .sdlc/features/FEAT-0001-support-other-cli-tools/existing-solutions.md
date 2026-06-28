@@ -2,7 +2,7 @@
 issue: "#18"
 title: "Support other harness CLI"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Existing Solutions: Support Other Harness CLI
@@ -30,9 +30,9 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 | StackStorm runners | Platform | Apache 2.0 | Mature | FR-01 (pluggable action runners via stevedore), timeout, env vars, result handling | Heavy platform dependency (RabbitMQ, MongoDB, 12 microservices); no AI-specific support |
 | Mastra | Framework | MIT | Active | FR-01 (model routing across 40+ providers), FR-07 (env vars per agent) | TS not Python; full framework adoption; no verdict parser contract |
 | n8n AI Agent | Platform | Sustainable | Mature | FR-01 (multi-provider LLM), output parser interface, timeout, HITL | Full platform migration; visual UI focus; no CLI customization; n8n Cloud pricing starts at $20/mo (self-hosted free) |
-| opencode-cli-enforcer | Library | MIT | Active (small npm package, ~50 stars, single maintainer) | FR-01 (multi-CLI orchestration), circuit breaker, retry, fallback chain | TS; no verdict parser abstraction; no setup hooks |
+| opencode-cli-enforcer | Library | MIT | Active (small npm package, 0 stars, single maintainer) | FR-01 (multi-CLI orchestration), circuit breaker, retry, fallback chain | TS; no verdict parser abstraction; no setup hooks |
 | Temporal | Platform | MIT | Mature | FR-01 (durable activity execution), timeout, retry, env vars | Heavy infrastructure (server + worker); overkill for single-step agent invocation; Temporal Cloud pricing per workflow-task (~$0.10 per 10k tasks) |
-| cli-agent-spec ExitCode | Standard | CC-BY-4.0 | Draft | FR-03 (structured exit codes with retryable/side-effects semantics) | Not a library; requires integration; no opinion on stdin parsing |
+| cli-agent-spec ExitCode | Standard | MIT | Draft | FR-03 (structured exit codes with retryable/side-effects semantics) | Not a library; requires integration; no opinion on stdin parsing |
 | pluggy | Library | MIT | Mature | FR-09 (hook-based plugin loading via hookspec/hookimpl decorators) | Not a parser framework; provides plugin discovery/loading pattern only |
 | sh, invoke, plumbum | Library | MIT / BSD / MIT | Mature | FR-01 (subprocess management: command execution, timeout, env passthrough) | No verdict routing; sh is synchronous-only; invoke adds task-runner semantics; plumbum supports remote |
 | verdict (haizelabs) | Library | MIT | Active | FR-03 (structured output extraction from LLM), composable judge protocols | LLM-as-judge framework, not a generic CLI verdict parser; the RegexExtractor pattern for extracting JSON fields from LLM output is informative for built-in parsers |
@@ -74,7 +74,7 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 - **Strengths:** Well-thought-out exit code table with machine-readable guarantees (retryable, side-effects). Defines codes for ARG_ERROR (2), PARTIAL_FAILURE (3), PRECONDITION (4), TIMEOUT (10), REDIRECTED (13). Hard invariants: code 2 always zero side effects, code 3 always non-retryable. Phase boundary between validation and execution.
 - **Weaknesses:** Draft specification, not a library. Lacks stdin/stdout protocol design (no opinion on how parsers receive input). Focused on CLIs in general, not AI verdict specifically.
 - **Integration effort:** Low — adopt the exit code table as the verdict parser contract.
-- **Cost:** Free (CC-BY-4.0).
+- **Cost:** Free (MIT).
 - **Risks:** Low community adoption (~5 GitHub stars); specification is not widely referenced. Could conflict with opencode's existing exit code convention (0=approved, 1=changes-requested, 2+=rejected). Single author risk — if abandoned, no community fork exists.
 - **Forward compatibility:** Stable; spec changes would be additive.
 
