@@ -2,7 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
-revision: 6
+revision: 7
 ---
 
 # Specification: Client/Server architecture
@@ -96,13 +96,13 @@ The `gh_token` field stores sensitive GitHub credentials. At rest, the value is 
 **Migration from plaintext to encryption:** When `TOKEN_ENCRYPTION_KEY` is first set after a period of running without it, the server re-encrypts all plaintext tokens on startup. A separate offline tool (`llmaw-admin decrypt-tokens`) is provided for development and disaster recovery scenarios that require plaintext tokens. This command must be run against a stopped server instance and logs a warning before proceeding. Production deployments should always set `TOKEN_ENCRYPTION_KEY`.
 
 **GitHub App installation token refresh:** The `gh_token` field stores a GitHub App installation access token, a PAT, or a GitHub App user access token. Installation access tokens issued by GitHub Apps expire 1 hour after creation. To handle this, the server runs a background token refresh process on a per-repository schedule. For each repository:
-1. The server stores the `gh_token` along with an `auth_type` field (values: `"installation"`, `"pat"`, `"user_token"`) in the `repositories.metadata` JSON column, along with the token's expiry timestamp (`gh_token_expires_at`) and the GitHub App's `app_id` and `installation_id` for refresh-capable tokens.
-2. A background refresh task runs every 5 minutes, querying all repositories whose `gh_token_expires_at` is within the next 10 minutes (or is already expired).
-3. For each such repository with `auth_type: "installation"`, the server generates a new JWT signed with the app's private key (loaded from a mounted file at `GITHUB_APP_PRIVATE_KEY_PATH`, default `/etc/llmaw/github-app.pem`, or from the `GITHUB_APP_PRIVATE_KEY` environment variable), exchanges it for a fresh installation access token via `POST /app/installations/{installation_id}/access_tokens`, and updates `gh_token` and `gh_token_expires_at` in the database.
-4. For `auth_type: "pat"`, the token does not expire automatically; no refresh is needed. The server sends a warning log if a PAT-bearing repository's token is approaching known expiry (set via `PAT_EXPIRY_WARNING_DAYS` environment variable, default 7 days before the token's `gh_token_expires_at`). PATs store their known expiry in `gh_token_expires_at` and `auth_type: "pat"`.
-5. For `auth_type: "user_token"`, GitHub App user tokens expire after 8 hours. The same refresh flow applies as installation tokens but uses the user token refresh endpoint.
-6. If token refresh fails (network error, GitHub API error), the task logs the failure and increments a `metadata.refresh_failure_count` counter for that repository. After 3 consecutive failures, the repository's `active` flag is set to `false` and an error is logged. An admin must investigate and re-enable via `PATCH /admin/repositories/{owner}/{repo}`.
-7. The `gh_token_expires_at` value and `auth_type` are accepted as optional fields in `POST /admin/repositories` and `PATCH /admin/repositories/{owner}/{repo}`. If not provided on registration, `auth_type` defaults to `"pat"` and `gh_token_expires_at` is set to `null` (never expires). The server never exposes `gh_token` or `gh_token_expires_at` in API responses.
+1. The server stores the `gh_token` along with system-managed fields in the `repositories.metadata` JSON column using a `_` prefix convention: `_auth_type` (values: `"installation"`, `"pat"`, `"user_token"`), `_gh_token_expires_at` (token expiry timestamp), `_app_id` and `_installation_id` (GitHub App identifiers for refresh-capable tokens), and `_refresh_failure_count`. User-provided extension fields are stored without a prefix, preventing accidental overwrite of system-managed values.
+2. A background refresh task runs every 5 minutes, querying all repositories whose `metadata->_gh_token_expires_at` is within the next 10 minutes (or is already expired).
+3. For each such repository with `_auth_type: "installation"`, the server generates a new JWT signed with the app's private key (loaded from a mounted file at `GITHUB_APP_PRIVATE_KEY_PATH`, default `/etc/llmaw/github-app.pem`, or from the `GITHUB_APP_PRIVATE_KEY` environment variable), exchanges it for a fresh installation access token via `POST /app/installations/{installation_id}/access_tokens`, and updates `gh_token`, `_gh_token_expires_at`, and resets `_refresh_failure_count` to 0 in the database.
+4. For `_auth_type: "pat"`, the token does not expire automatically; no refresh is needed. The server sends a warning log if a PAT-bearing repository's token is approaching known expiry (set via `PAT_EXPIRY_WARNING_DAYS` environment variable, default 7 days before the token's `_gh_token_expires_at`). PATs store their known expiry in `_gh_token_expires_at` and `_auth_type: "pat"`.
+5. For `_auth_type: "user_token"`, GitHub App user tokens expire after 8 hours. The same refresh flow applies as installation tokens but uses the user token refresh endpoint.
+6. If token refresh fails (network error, GitHub API error), the task logs the failure and increments `_refresh_failure_count` for that repository. After 3 consecutive failures (no intervening successful refresh), the repository's `active` flag is set to `false` and an error is logged. The `_refresh_failure_count` is reset to 0 on any successful refresh. "Consecutive" means failures within the same repository's refresh history regardless of wall-clock time — a single successful refresh breaks the streak. An admin must investigate and re-enable via `PATCH /admin/repositories/{owner}/{repo}`.
+7. The `auth_type` and `gh_token_expires_at` values are accepted as optional fields in `POST /admin/repositories` and `PATCH /admin/repositories/{owner}/{repo}`. If not provided on registration, `auth_type` defaults to `"pat"` and `gh_token_expires_at` is set to `null` (never expires). The server never exposes `gh_token` or `gh_token_expires_at` in API responses.
 
 Consumers must ignore unknown fields in response payloads. The `metadata` column exists for forward-compatible addition of backend-specific configuration without schema migration.
 
@@ -169,7 +169,7 @@ The `versions.yaml` file is read at server startup during the initialization pha
 | Field | Type | Constraints | Description |
 |---|---|---|---|
 | id | uuid | PK, not null | Internal identifier |
-| repo_id | uuid | FK → repositories.id, not null | Target repository |
+| repo_id | uuid | FK → repositories.id ON DELETE CASCADE, not null | Target repository |
 | delivery_id | text | not null, unique | `X-GitHub-Delivery` header value |
 | event_type | text | not null | e.g., "push", "pull_request", "issues" |
 | payload | json | not null | Full webhook payload |
@@ -348,14 +348,16 @@ Register a new webhook target. Requires admin authentication.
 **Request**
 
 | Field | Type | Required | Description |
-|---|---|---|---|
+|---|---|---|---|---|
 | owner | string | Yes | GitHub owner |
 | repo | string | Yes | GitHub repository name |
 | secret_token | string | Yes | HMAC secret for webhook verification |
 | gh_token | string | Yes | GitHub API token (PAT or installation token) |
+| auth_type | string | No | Authentication type: "pat", "installation", or "user_token" (default "pat") |
+| gh_token_expires_at | datetime | No | ISO 8601 timestamp of token expiry (default null for PAT) |
 | version | string | No | Agent version for canary (default "v1") |
 
-The request body is JSON. Unknown fields are accepted and stored in `repositories.metadata` for forward compatibility.
+The request body is JSON. Unknown fields are accepted and stored in `repositories.metadata` for forward compatibility. System-managed metadata fields use a `_` prefix convention (e.g., `_auth_type`, `_refresh_failure_count`) to prevent collision with user-provided extension fields, which are stored without a prefix.
 
 **Response 201**
 
@@ -419,13 +421,15 @@ Update a registered repository's configuration. Requires admin authentication.
 **Request**
 
 | Field | Type | Required | Description |
-|---|---|---|---|
+|---|---|---|---|---|
 | secret_token | string | No | New HMAC secret for webhook verification |
 | gh_token | string | No | New GitHub API token |
+| auth_type | string | No | Authentication type: "pat", "installation", or "user_token" |
+| gh_token_expires_at | datetime | No | ISO 8601 timestamp of token expiry |
 | active | boolean | No | Enable or disable event processing |
 | version | string | No | Agent version for canary |
 
-Unknown fields are accepted and stored in `repositories.metadata` for forward compatibility.
+Unknown fields are accepted and stored in `repositories.metadata` for forward compatibility. System-managed metadata fields use a `_` prefix convention (e.g., `_auth_type`, `_refresh_failure_count`) to prevent collision with user-provided extension fields.
 
 **Response 200**
 
@@ -729,7 +733,7 @@ The following targets define the expected service level for a single-container d
 
 ## Risks and Unknowns
 
-1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: a per-session `threading.Lock` (keyed by `(repo_id, subject_type, subject_id)`) serializes writes within each session. The lock is acquired in the thread pool worker before any SQLite write and released after the write completes. `threading.Lock` is safe across the `run_in_executor` thread pool boundary, unlike `asyncio.Lock`. This allows concurrent writes across different sessions while preventing write interleaving within a single session's conversation history. Escalation path: migration to PostgreSQL (schema-compatible change).
+1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: a per-session `threading.Lock` (keyed by `(repo_id, subject_type, subject_id)`) serializes writes within each session. Locks are stored in a `dict` keyed by session key, with access synchronized via a module-level `threading.Lock` on the dict itself. When a session expires (TTL check or reaper deletion), its lock is removed from the dict during the same write transaction that updates the session's `updated_at` — the thread pool worker that loaded the session holds the only reference to the lock at that point. A background cleanup goroutine (or deferred cleanup at session load time) purges orphaned lock entries by comparing their last-known `updated_at` against the current time minus the TTL. The lock dict never grows beyond the number of active (non-expired) sessions plus a small margin for in-flight deletions. Escalation path: migration to PostgreSQL (schema-compatible change).
 2. **Thread pool exhaustion**: If all 20 thread pool workers are occupied by long-running agent executions, new webhooks queue up and risk violating NFR-03 (5s dispatch). Mitigation: monitor pool queue depth; alert at 80% utilization. The bounded pool prevents OOM but may delay dispatch.
 3. **`opencode` CLI version drift**: The Docker image pins an `opencode` version. If the agent CLI evolves, the server image must be rebuilt. Mitigation: make `opencode` version a build arg in the Dockerfile.
 4. **Skill file distribution**: Cloning the agent repository at startup may fail or time out, blocking the server from becoming healthy. Mitigation: retry with backoff; fall back to a cached clone if available (from a prior startup); document that a volume mount is the production-reliable approach.
