@@ -8,7 +8,7 @@ status: in-review
 
 ## Overview
 
-The express path adds a lightweight third flow to the existing label-driven state machine (`flows.yml`) that routes eligible issues directly from triage to implementation, skipping all intermediate planning phases. The triage-issue skill is extended to emit a `complexity` verdict field; issues classified as `feature` + `complexity: low` are labeled `llmaw:express-eligible` and matched by a new `express` flow rule that runs only `create-implementation`. A human-applied `llmaw:quick-implement` label bypasses automatic classification. The existing `feature` and `bugfix` flows are unchanged, and all engine internals (`engine.py`, `route.py`, `run_rule.py`, `run_steps.py`, `apply_outcome.py`) are reused as-is.
+The express path adds a lightweight third flow to the existing label-driven state machine (`flows.yml`) that routes eligible issues directly from triage to implementation, skipping all intermediate planning phases. The only planning-phase artifacts that are NOT produced are: requirements, existing-solutions, codebase-analysis, feasibility, specifications, telemetry, observability, plan, and tasks. A minimal routing record (`express-decision.md`) IS produced to satisfy traceability (FR-03). This is not a "planning artifact" — it is a routing/outcome record analogous to a CI build log. The triage-issue skill is extended to emit a `complexity` verdict field; issues classified as `feature` + `complexity: low` are labeled `llmaw:express-eligible` and matched by a new `express` flow rule that runs only `create-implementation`. A human-applied `llmaw:quick-implement` label bypasses automatic classification. The existing `feature` and `bugfix` flows are unchanged, and all engine internals (`engine.py`, `route.py`, `run_rule.py`, `run_steps.py`, `apply_outcome.py`) are reused as-is.
 
 ## Architecture
 
@@ -80,12 +80,14 @@ Human override path (FR-06):
 
 All labels added to the `llmaw:` namespace in `flows.yml`.
 
-| Label | Type | Description |
-|---|---|---|
-| `llmaw:express-eligible` | Milestone (transient) | Set automatically when triage classifies issue as feature + low complexity |
-| `llmaw:quick-implement` | Human-applied | Manual override: routes any issue through the express path regardless of triage verdict |
-| `llmaw:express-done` | Terminal | Set when express-path implementation succeeds and a PR is created |
-| `llmaw:express-failed` | Terminal | Set when express-path implementation fails |
+| Label | Type | Set by | Description |
+|---|---|---|---|
+| `llmaw:express-eligible` | Milestone (transient) | Automation only | Set automatically when triage classifies issue as feature + low complexity. The flow engine MUST only accept this label when applied by the automation (triage step); if a human applies it manually, the rule MUST verify that the triage verdict exists and matches before routing. |
+| `llmaw:quick-implement` | Human-applied | Human or automation | Manual override: routes any issue through the express path regardless of triage verdict. Intentionally bypasses classification. |
+| `llmaw:express-done` | Terminal | Automation | Set when express-path implementation succeeds and a PR is created |
+| `llmaw:express-failed` | Terminal | Automation | Set when express-path implementation fails |
+
+**Anti-spoofing (NFR-05):** The `llmaw:express-eligible` label MUST NOT trigger the express flow on its own. The flow rule `express-implement-from-issue` MUST check that the label was applied by the automation (e.g., by verifying the issue timeline or requiring that `llmaw:express-eligible` was set in the same workflow run). If a human or compromised actor applies `llmaw:express-eligible` to a complex feature, the express flow MUST NOT activate and the issue MUST fall through to the default `feature` flow. The `llmaw:quick-implement` label is the only human-applied bypass, and its use is intentional and audited via the issue timeline.
 
 ### Triage Verdict Schema (extended)
 
@@ -105,15 +107,19 @@ Minimal artifact written to `.sdlc/features/FEAT-NNNN-<slug>/express-decision.md
 
 ```yaml
 ---
+schema_version: 1
 path: express
 implemented_from: issue #<N>
 trigger: classification | manual
 complexity: low | medium | high
+reason: "<triage classification rationale>"  # FR-03 "why"
 implemented_at: <ISO datetime>
 outcome: success | failed
 pr_url: <url>  # present on success
 ---
 ```
+
+**Forward compatibility:** Consumers MUST ignore unknown top-level fields. The `schema_version` field enables consumers to detect which schema generation an artifact uses. New complexity values (e.g., `trivial`, `very-high`) may be added; consumers MUST treat unrecognized values as "not express-eligible."
 
 ## API Contracts
 
@@ -130,10 +136,41 @@ A new `express` top-level key in `flows.yml` with rules that match on `llmaw:exp
 | `when.event` | `issues:labeled`, `issues:opened` |
 | `when.labels` | `llmaw:express-eligible`, `llmaw:quick-implement` |
 | `steps.agent` | `create-implementation` |
-| `on_outcome.approved` | Set `llmaw:express-done`, create PR |
+| `on_outcome.approved` | Set `llmaw:express-done`, post "implementation complete" comment |
 | `on_outcome.failed` | Set `llmaw:express-failed`, comment error |
 
+The `create-implementation` agent step is responsible for producing the code changes AND creating the PR (by invoking the `create-pr` skill internally or using `gh` directly before it exits). The `on_outcome` handler only manages labels and comments; it does not create the PR. This keeps the PR-creation logic inside the agent step where it can access the implementation branch and commit SHA.
+
 **Forward compatibility:** Consumers must ignore unknown fields in any rule schema. New label values may be added to the `when.labels` list without breaking existing rules.
+
+### defaults.express — Express Path Config Block
+
+A new `defaults.express` key in `flows.yml` under the existing `defaults:` top-level block. All fields are optional; defaults shown below.
+
+```yaml
+defaults:
+  express:
+    eligibility:
+      complexity_values: ["low"]            # complexity levels that qualify for express path
+      require_labels: []                    # extra labels that must be present (e.g., "good-first-issue")
+      exclude_labels: ["llmaw:complex"]     # labels that disqualify regardless of complexity
+      max_issue_body_chars: 5000            # issues longer than this are not eligible
+    model: ""                               # LLM model override; empty = use defaults.model
+    timeout_minutes: 15                     # max wall-clock for create-implementation
+    comment_on_classification: true         # whether to post classification rationale as issue comment
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `eligibility.complexity_values` | string[] | `["low"]` | Complexity verdict values that qualify for the express path |
+| `eligibility.require_labels` | string[] | `[]` | Labels that MUST be present on the issue for express eligibility |
+| `eligibility.exclude_labels` | string[] | `["llmaw:complex"]` | Labels that disqualify the issue regardless of complexity |
+| `eligibility.max_issue_body_chars` | integer | `5000` | Maximum issue body length for express eligibility (0 = no limit) |
+| `model` | string | `""` | LLM model override for the express-path agent step |
+| `timeout_minutes` | integer | `15` | Max wall-clock time for the `create-implementation` step |
+| `comment_on_classification` | boolean | `true` | Whether to post the classification rationale as an issue comment (FR-05) |
+
+**Forward compatibility:** Consumers MUST ignore unknown keys within `defaults.express`. New eligibility criteria fields may be added without breaking existing configs.
 
 ### triage-issue Skill — Extended Verdict Contract
 
@@ -146,6 +183,16 @@ The skill's output schema is extended additively. Existing consumers that only r
 | `reason` | string | No | Explanation of the classification |
 
 **Forward compatibility:** The verdict YAML may contain additional top-level fields. Consumers MUST ignore fields they do not recognize.
+
+**Classification logging (FR-05):** When `defaults.express.comment_on_classification` is `true` (the default), the triage-flow `on_outcome` posts an issue comment recording the classification decision and its rationale. The comment format:
+
+> **Express Path Classification**
+> - Verdict: feature
+> - Complexity: low
+> - Reason: Single-file change with clear scope; no cross-cutting concerns.
+> - Route: Express path enabled.
+
+When `complexity` is absent or the issue is ineligible, the comment instead states why the express path was not chosen. This satisfies FR-05's requirement to log the classification decision to the issue.
 
 ### Outcome Verdict Contract
 
@@ -185,10 +232,11 @@ Issue Opened
   |--- create-implementation skill runs
   |     input: issue body + labels only
   |     produces: implementation + tests
+  |     creates PR via create-pr skill (inside agent step)
   |
   |--- on_outcome: approved
   |     sets llmaw:express-done
-  |     creates PR via create-pr skill
+  |     posts comment: "Implementation ready at PR #<N>"
   |
   |--- PR review follows existing review flow
 ```
@@ -225,6 +273,31 @@ Human adds llmaw:quick-implement label to an issue
   |     (per FR-02 execution failure AC)
 ```
 
+### Express Label Removed: Fallback to Full Pipeline (FR-06 Inverse)
+
+```
+Issue has llmaw:express-eligible label
+  |
+  |--- Human removes llmaw:express-eligible label
+  |     (or llmaw:quick-implement was removed)
+  |
+  |--- issue labeled event fires (labeled: removed)
+  |
+  |--- dispatch.yml runs route.py
+  |     express-implement-from-issue rule does NOT match
+  |     (requires the label to be present)
+  |
+  |--- If issue has llmaw:feature-request or no express label:
+  |     falls through to default routing
+  |
+  |--- Next pipeline cycle triggers full triage -> feature flow
+  |     (assuming re-classification yields "feature" verdict)
+  |
+  |--- Full SDLC pipeline runs as normal
+```
+
+Note: removing `llmaw:express-eligible` or `llmaw:quick-implement` does NOT automatically trigger the full pipeline. The issue must go through the normal triage flow on the next event cycle. If the issue already has `llmaw:feature-request` (from an earlier triage pass), it is picked up by the feature flow on the next matching event.
+
 ### Ineligible Issue: Full Pipeline
 
 ```
@@ -255,18 +328,27 @@ Issue Opened
 | Artifact trail | Minimal `express-decision.md` + terminal label | Satisfies traceability requirement (FR-03) without enforcing a full `.sdlc/` branch cycle |
 | Failure handling | Terminal label + comment; NO fallback to full pipeline | Prevents infinite loops; failure is surfaced to humans for manual intervention per requirements |
 | Configurable criteria | `defaults.express` block in `flows.yml` | Follows existing pattern for engine config (models, timeouts); criteria can be tuned without code changes |
+| Cross-repo deployment | Update `triage-issue` skill first, then add express flow | The express flow treats absent `complexity` as "not eligible." If the flow ships before the skill, issues simply never match the express rule — safe degradation. If the skill ships first, the `complexity` field is emitted but no flow consumes it yet — also safe. Either order is safe because the contract is backward compatible. |
+| PR ownership | `create-implementation` agent step invokes `create-pr` or `gh` internally | The agent step has access to the implementation branch and commit SHA after producing code changes. Delegating PR creation to `on_outcome` would require the agent to write state for the engine to read, adding complexity. |
+| Anti-spoofing | `llmaw:express-eligible` is auto-only; rule verifies origin | Without this guard, any issue could be routed to the express path by applying the label manually (or via a compromised token), bypassing planning on complex features. The guard ensures `llmaw:quick-implement` is the only intentional bypass. |
 
 ## Risks and Unknowns
 
-1. **`create-implementation` skill depends on upstream artifacts.** The core risk (also identified in codebase analysis): `create-implementation` may fail or produce low-quality output when no requirements, specifications, or codebase-analysis artifacts exist. Mitigation: verify this through testing before enabling the express path on real issues; the failure outcome (`llmaw:express-failed`) provides a safe abort path.
+1. **`create-implementation` skill depends on upstream artifacts.** The core risk (also identified in codebase analysis): `create-implementation` may fail or produce low-quality output when no requirements, specifications, or codebase-analysis artifacts exist. Mitigation: verify this through testing before enabling the express path on real issues; the failure outcome (`llmaw:express-failed`) provides a safe abort path. If the dependency is hard (skill crashes without the artifacts), the express path cannot ship without modifying `create-implementation` to tolerate their absence.
 
-2. **Coordination between two repositories.** The `triage-issue` skill lives in `tomzx/agents` while the express flow lives in this repository. Adding `complexity` to the triage verdict requires coordinated deployment: the skill must be updated first (or the express flow must handle the field's absence gracefully, which it does via the "absent means not eligible" default).
+2. **Coordination between two repositories.** The `triage-issue` skill lives in `tomzx/agents` while the express flow lives in this repository. Adding `complexity` to the triage verdict requires coordinated deployment: the skill must be updated first (or the express flow must handle the field's absence gracefully, which it does via the "absent means not eligible" default). Either order is safe: if the flow ships first, issues simply never match the express rule; if the skill ships first, the field is emitted but unused. The deployment ordering risk is low.
 
 3. **Classification accuracy at triage time.** The triage agent's ability to assess complexity from the issue body alone may be limited (80%+ F1 per academic benchmarks). False positives (a complex feature labeled as low complexity) would produce a failed implementation attempt. The failure path handles this gracefully, but repeated failures may erode trust in the express path.
 
 4. **Token cost of the minimal artifact.** Writing `express-decision.md` costs tokens on every express-path feature. For high-volume usage this could negate some of the token savings from skipping planning phases. Mitigation: if usage is high, the artifact can be deferred to a post-hoc aggregation step.
 
 5. **Label namespace collisions.** The new labels must not overlap with existing `llmaw:*` labels. The existing-solutions survey and codebase analysis confirm no collisions with current label definitions, but future label additions must respect the namespace.
+
+6. **Terminal labels are one-way doors.** Once `llmaw:express-done` or `llmaw:express-failed` is set, the flow engine will not re-process the issue through any path (express or full) without human removal of the terminal label. This is by design — it prevents infinite loops — but means a human must intervene to retry a failed express-path issue. This is a design commitment, not a bug.
+
+7. **`express-decision.md` persists if issue is later re-processed.** If an issue gets `llmaw:express-failed` and a human removes the label and triggers the full pipeline, the old `express-decision.md` artifact remains with a `failed` outcome. This is acceptable for traceability (readers see the failed attempt) but must be documented to avoid confusion.
+
+8. **NFR-01 token savings are unmeasured.** The requirement states the express path must "complete in fewer total tokens than the full pipeline" but provides no concrete target or baseline. Mitigation: measure token consumption for the first 5 express-path runs against comparable full-pipeline runs for similar issues. A 40%+ reduction is a reasonable initial target. Re-evaluate after 20 runs to establish a statistical baseline.
 
 ## Out of Scope
 
