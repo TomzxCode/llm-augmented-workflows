@@ -1,7 +1,7 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: draft
+status: in-review
 ---
 
 # Specification: Client/Server architecture
