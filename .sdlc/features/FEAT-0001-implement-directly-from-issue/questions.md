@@ -11,3 +11,5 @@ Open questions from requirements review (FEAT-0001):
 4. How should metrics be exposed to the project owner? Via GitHub issue comments, a dashboard, or logs? (FR-07 requires metrics but the mechanism is open.)
 
 5. How many features in the existing issue tracker would qualify for the express path? Usage data is absent; understanding frequency would strengthen implementation priority.
+6. Should express-path eligibility be decided at triage time (extending the triage-issue skill's verdict) or as a separate routing step after triage? (From existing-solutions review.)
+7. How should the express path handle the initial issue triage record? Options: consume triage verdict as-is, add a new triage class, or re-classify after triage. (From existing-solutions review.)
