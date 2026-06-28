@@ -1,7 +1,7 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: draft
+status: approved
 ---
 
 # Codebase Analysis: Client/Server architecture
