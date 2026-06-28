@@ -1,6 +1,6 @@
 ---
 artifact: specification.md
-verdict: changes-requested
+verdict: approved
 reviewed_at: 2026-06-28
 ---
 
@@ -12,7 +12,7 @@ The previous finding about anti-spoofing verification being underspecified has b
 
 ## Inconsistencies
 
-**Line 163 describes an `issues:opened` match scenario that the defined rules cannot satisfy.** The spec states: "If an issue is created with `llmaw:quick-implement` pre-applied (e.g., via API), the `issues:opened` event carries the label in its payload and the express rule matches on that single event." However, both express rules define `when.event: issues:labeled` (lines 145, 155), and the Technical Decisions entry (line 388) confirms "`issues:opened` trigger: Not used; `issues:labeled` is the sole trigger." A rule matching `issues:labeled` will never fire on an `issues:opened` event regardless of which labels the payload carries. The API pre-labeled scenario would not trigger the express flow under the current rule schemas. Either add `issues:opened` as an additional event match on the `express-quick-implement` rule, or correct the descriptive text to clarify that the label must be applied post-creation to fire `issues:labeled`.
+**Resolved in revision 2.** Line 163 now correctly states: "Labels applied pre-creation are not matched because `when.event: issues:labeled` only fires on label changes, not on issue creation." This clarifies that pre-applied labels do not trigger the express flow, consistent with the rules' `when.event: issues:labeled` constraint.
 
 The following previous findings have been resolved and verified in revision 1:
 - `when.labels` (plural, array) vs. `when.label` (singular, string): Resolved. The spec now defines two separate rules, each matching a single label, consistent with the engine's `When` dataclass.
