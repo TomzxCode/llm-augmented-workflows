@@ -464,12 +464,19 @@ def test_normalize_action_coerces_and_defaults():
     assert a["labels"]["add"] == ["x"] and a["labels"]["remove"] == ["y"]
     assert a["labels"]["target"] == "subject"
     assert a["close"] is False and a["comment"] is None
+    assert a["post_reason"] is False
     empty = normalize_action(None, "k")
     assert empty == {
         "labels": {"add": [], "remove": [], "target": "subject"},
         "close": False,
         "comment": None,
+        "post_reason": False,
     }
+
+
+def test_normalize_action_preserves_post_reason():
+    a = normalize_action({"comment": "fallback", "post_reason": True}, "k")
+    assert a["post_reason"] is True
 
 
 def test_normalize_action_rejects_bad_fields():
@@ -481,6 +488,8 @@ def test_normalize_action_rejects_bad_fields():
         normalize_action({"close": "yes"}, "k")
     with pytest.raises(ConfigError):
         normalize_action({"comment": 5}, "k")
+    with pytest.raises(ConfigError):
+        normalize_action({"post_reason": "yes"}, "k")
 
 
 def test_normalize_on_outcome_cases_and_default():

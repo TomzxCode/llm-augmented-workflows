@@ -426,7 +426,10 @@ def normalize_action(action: Any, case_key: str) -> dict[str, Any]:
     comment = action.get("comment")
     if comment is not None and not isinstance(comment, str):
         raise ConfigError(f"on_outcome case '{case_key}' comment must be a string")
-    return {"labels": labels, "close": close, "comment": comment}
+    post_reason = action.get("post_reason", False)
+    if not isinstance(post_reason, bool):
+        raise ConfigError(f"on_outcome case '{case_key}' post_reason must be a boolean")
+    return {"labels": labels, "close": close, "comment": comment, "post_reason": post_reason}
 
 
 def normalize_on_outcome(step: dict[str, Any]) -> dict[str, Any]:

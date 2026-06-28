@@ -236,3 +236,46 @@ def test_outcome_present_false_when_verdict_missing(monkeypatch, tmp_path):
 def test_outcome_present_false_when_file_missing(monkeypatch):
     monkeypatch.delenv("OUTCOME_YAML", raising=False)
     assert apply_outcome.outcome_present() is False
+
+
+# --------------------------------------------------------------------------- #
+# Regression: post_reason declared in flows.yml must survive normalization
+# and reach apply() so the skill's reason is posted instead of the fallback.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_reason_survives_normalize_to_apply(monkeypatch, tmp_path):
+    """End-to-end: normalize_on_outcome -> apply posts the skill's reason.
+
+    This exercises the path the per-action unit tests bypass by handing apply()
+    a pre-built dict. Previously normalize_action dropped ``post_reason``, so
+    the hardcoded comment was posted and the reason discarded.
+    """
+    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ISSUE_NUMBER", "42")
+    _write_outcome(
+        monkeypatch,
+        tmp_path,
+        "verdict: changes-requested\nreason: Missing rollback strategy.\n",
+    )
+    captured = _capture_gh(monkeypatch)
+    monkeypatch.setattr(apply_outcome.run_steps, "apply_labels", lambda step: None)
+
+    from llm_augmented_workflows.engine import normalize_on_outcome
+
+    on_outcome = normalize_on_outcome(
+        {
+            "on_outcome": {
+                "changes-requested": {
+                    "labels": {"add": ["llmaw:revise"]},
+                    "comment": "Fallback comment.",
+                    "post_reason": True,
+                }
+            }
+        }
+    )
+
+    apply_outcome.apply(on_outcome)
+
+    assert _body_of(captured) == "Missing rollback strategy."
