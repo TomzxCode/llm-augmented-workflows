@@ -2,7 +2,7 @@
 issue: "#17"
 title: "Implement directly from issue"
 status: in-review
-revision: 2
+revision: 3
 ---
 
 # Telemetry: Implement directly from issue
@@ -141,6 +141,16 @@ This feature adds an express path that routes eligible issues directly from tria
 
 **Note:** `workflow_step_failed` covers infrastructure failures (skill crash, label apply failure, workflow dispatch error, missing outcome YAML, timeout). For the `create-implementation` step specifically, use the `implementation_failed` event which captures domain-level failures (skill returning `verdict: failed`) with token and duration properties.
 
+### Event Emission Mechanism for on_outcome Events
+
+Events that fire from `flows.yml` `on_outcome` handlers (`classification_comment_posted`, `routing_decision_made`, `express_override_used`, `express_label_removed`) cannot use skill outcome YAML because they are emitted by deterministic shell/labels steps, not by agent skills. These events are emitted via structured log lines written to `$GITHUB_STEP_SUMMARY` (GitHub Actions built-in step summary output) using the following JSON format:
+
+```json
+{"event": "classification_comment_posted", "properties": {"issue_number": 17, ...}, "timestamp": "2026-06-28T12:00:00Z"}
+```
+
+Each JSON log line appears on its own line prefixed with `TELEMETRY_EVENT:` so it can be filtered from other step output. A post-processing step or scheduled workflow collects these lines across workflow runs and aggregates them into a telemetry summary stored at `.sdlc/express-telemetry.json` for querying via label queries and time-series analysis.
+
 ### express_override_used
 
 **Trigger:** Human applies `llmaw:quick-implement` label to an issue
@@ -191,7 +201,7 @@ This feature adds an express path that routes eligible issues directly from tria
   - `is:issue label:llmaw:express-failed` — all failed express attempts
   - `is:issue label:llmaw:express-eligible` — issues awaiting express implementation
   - `is:issue label:llmaw:quick-implement` — manual override usage
-- **Alerts:** If express-path failure rate exceeds 20% in any 7-day window, post a summary comment to the tracking issue. If token savings fall below target for 3 consecutive runs, flag the classification criteria for review.
+- **Alerts:** If express-path failure rate exceeds 20% in any 7-day window, post a summary comment to the tracking issue. If token savings fall below target for 3 consecutive runs, flag the classification criteria for review. If classification comment count exceeds 5 on any single issue, investigate whether a re-classification loop is occurring and consider disabling `comment_on_classification`. If manual override rate exceeds 50% of express-path runs in any 30-day window, review classification accuracy and eligibility criteria, then adjust `defaults.express.eligibility` or triage prompt accordingly.
 
 ## Out of Scope
 
