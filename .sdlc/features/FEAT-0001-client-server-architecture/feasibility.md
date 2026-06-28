@@ -2,7 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Feasibility Assessment: Client/Server architecture
@@ -22,7 +22,7 @@ Replace the GitHub Actions execution model with a hosted HTTP server that receiv
 
 The core engine (`engine.py`) is pure functions with no I/O side effects — reuse as-is. The pipeline entry points need mechanical refactoring (extract logic into parameterized functions, keep CLI wrappers). The new server components (FastAPI routes, HMAC verification, SQLite session store) are standard patterns with zero licensing risk. HMAC verification must follow GitHub's reference implementation using `hmac.compare_digest` for timing-safe comparison; any deviation is a security risk and must be caught in code review. Webhook idempotency must be handled via `X-GitHub-Delivery` header deduplication. SQLite concurrent write contention under NFR-04 load requires a lightweight lock or queue (e.g., `asyncio.Lock` per repo); migration to PostgreSQL is the escalation path if contention becomes blocking. Thread pool sizing must account for GIL-bound pipeline steps — the server should use a bounded thread pool (e.g., `ThreadPoolExecutor(max_workers=20)`) to prevent exhaustion under NFR-04's 10 concurrent repos.
 
-Two open questions remain: how skill files are distributed in the Docker image (cloned at start, mounted, or fetched on first use), and whether the server needs a `FORCE_RULE_ID` bypass. Neither is blocking — the first has multiple viable approaches, the second is trivially addable.
+Two open questions remain: how skill files are distributed in the Docker image (cloned at start, mounted, or fetched on first use), and whether the server needs a `FORCE_RULE_ID` bypass. Neither blocks the feasibility decision — the first has multiple viable approaches that can be decided during implementation, the second is trivially addable. The skill distribution strategy is moved to a condition below to ensure it is resolved before implementation begins.
 
 **Verdict:** Feasible
 
