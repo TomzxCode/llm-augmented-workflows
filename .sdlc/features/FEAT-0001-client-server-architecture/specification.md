@@ -1,8 +1,8 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: approved
-revision: 4
+status: in-review
+revision: 5
 ---
 
 # Specification: Client/Server architecture
@@ -111,7 +111,14 @@ Consumers must ignore unknown fields in response payloads. The `metadata` column
 | updated_at | datetime | not null | ISO 8601 |
 | version | integer | not null, default 1 | Optimistic concurrency counter, incremented on write |
 
-Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `conversation_history` field stores the agent's conversation as a JSON array; each entry has `role` (user/assistant/system), `content`, and `timestamp`. The `context` field stores pipeline state. Consumers must preserve unknown fields in both JSON columns across read-write cycles (read-modify-write must retain unrecognized keys).
+Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `subject_type` field is populated from the webhook event as follows:
+- `issue_comment` and `issues` events map to `subject_type="issue"` with `subject_id` set to the issue number from the event payload.
+- `pull_request` events map to `subject_type="pull_request"` with `subject_id` set to the PR number.
+- `push` events map to `subject_type="push"` with `subject_id` set to `0` (there is no issue/PR number for push events).
+
+This mapping ensures that all comments on the same issue share a single session, preserving conversation history across sequential `issue_comment` events (FR-02).
+
+The `conversation_history` field stores the agent's conversation as a JSON array; each entry has `role` (user/assistant/system), `content`, and `timestamp`. The `context` field stores pipeline state. Consumers must preserve unknown fields in both JSON columns across read-write cycles (read-modify-write must retain unrecognized keys).
 
 **Foreign key behavior:** The `repo_id` foreign key from `sessions` references `repositories.id` with `ON DELETE CASCADE` — when a repository is deregistered, its sessions are deleted automatically. The `webhook_events` table also has `ON DELETE CASCADE` from `repo_id` to `repositories.id`. This ensures no orphaned data remains after deregistration and keeps the session reaper's query logic simple (it only needs a `updated_at` filter).
 
@@ -180,6 +187,8 @@ The following indexes are created at schema initialization to ensure lookup perf
 | idx_webhook_events_repo_id_status | webhook_events | (repo_id, status) | Admin API event listing by repo/status |
 
 ## API Contracts
+
+All endpoints documented with unversioned paths (e.g., `POST /webhook`) are also available at their versioned equivalents (`POST /v1/webhook`) through dual route registration at server startup. The unversioned paths always resolve to the latest stable major version and are the canonical form for the current API major version. Future major versions (e.g., `/v2/webhook`) may introduce breaking changes; the unversioned alias will be updated to track the latest stable version. Deprecated versions are removed after at least one release cycle of deprecation notice.
 
 ### POST /webhook
 
@@ -386,6 +395,13 @@ Deregister a webhook target.
 }
 ```
 
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
+| 404 | NOT_FOUND | Repository not registered |
+
 ### PATCH /admin/repositories/{owner}/{repo}
 
 Update a registered repository's configuration. Requires admin authentication.
@@ -421,6 +437,7 @@ Unknown fields are accepted and stored in `repositories.metadata` for forward co
 
 | Status | Code | When |
 |---|---|---|
+| 400 | INVALID_INPUT | Field value is malformed or semantically invalid |
 | 401 | UNAUTHORIZED | Missing or invalid admin token |
 | 404 | NOT_FOUND | Repository not registered |
 
@@ -453,6 +470,34 @@ The `secret_token` and `gh_token` fields are never returned in list responses. C
 | Status | Code | When |
 |---|---|---|
 | 401 | UNAUTHORIZED | Missing or invalid admin token |
+
+### GET /admin/repositories/{owner}/{repo}
+
+Retrieve a single registered repository's current configuration. Requires admin authentication. The `secret_token` and `gh_token` fields are never returned.
+
+**Response 200**
+
+```json
+{
+  "repository": {
+    "id": "uuid",
+    "owner": "my-org",
+    "repo": "my-repo",
+    "active": true,
+    "version": "v1",
+    "created_at": "2026-06-28T00:00:00Z"
+  }
+}
+```
+
+Consumers must ignore unknown fields in the repository object.
+
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
+| 404 | NOT_FOUND | Repository not registered |
 
 ### GET /admin/repositories/{owner}/{repo}/sessions
 
