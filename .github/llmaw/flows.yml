@@ -104,7 +104,7 @@
 defaults:
   model: opencode/deepseek-v4-flash-free   # opencode model id (provider/model)
   agents_repository: tomzx/agents          # repo providing skills, cloned at runtime
-  timeout_minutes: 30
+  timeout_minutes: 60
   # execution: event-driven                 # or "continuous": chain rules in one job
                                             # until llmaw:needs-human (see docs/flows.md)
 
