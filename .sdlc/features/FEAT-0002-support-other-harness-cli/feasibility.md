@@ -1,7 +1,7 @@
 ---
 issue: "#18"
 title: "Support other harness CLI"
-status: in-review
+status: approved
 ---
 
 # Feasibility Assessment: Support Other Harness CLI
