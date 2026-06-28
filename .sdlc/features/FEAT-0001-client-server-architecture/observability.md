@@ -1,7 +1,8 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: approved
+status: in-review
+revision: 1
 ---
 
 # Observability: Client/Server architecture
@@ -24,6 +25,7 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | WARN | repository_not_found | owner, repo, delivery_id | Webhook arrived for an unregistered repository |
 | INFO | unsupported_event_skipped | delivery_id, event_type | X-GitHub-Event is not a supported type |
 | INFO | webhook_response | delivery_id, status_code, reason | Response sent to GitHub (accepted, skipped, error code) |
+| WARN | invalid_payload | delivery_id, error_detail | Request body is not valid JSON (delivery_id = "none" if unparseable) |
 
 ### HTTP Middleware
 
@@ -151,13 +153,22 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Labels | status: completed, failed, skipped |
 | Source | Pipeline bridge on completion |
 
+### Thread Pool Queue Depth
+
+| Field | Value |
+|---|---|
+| Type | Gauge |
+| Description | Number of pipeline submissions currently queued in the thread pool waiting for a worker thread |
+| Labels | none |
+| Source | Thread pool queue size observation at /health check time |
+
 ### Pipeline Submission Failures
 
 | Field | Value |
 |---|---|
 | Type | Counter |
 | Description | Thread pool queue full, pipeline not dispatched |
-| Labels | none |
+| Labels | event_type |
 | Source | Pipeline bridge on queue-full exception |
 
 ### Active Sessions
@@ -214,6 +225,15 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Labels | owner, repo |
 | Source | Token refresh background task (read from metadata._refresh_failure_count) |
 
+### Graceful Shutdown Cancellations
+
+| Field | Value |
+|---|---|
+| Type | Counter |
+| Description | Number of in-flight tasks cancelled due to drain timeout during graceful shutdown |
+| Labels | none |
+| Source | Uvicorn lifespan handler on shutdown completion |
+
 ### Repositories Disabled
 
 | Field | Value |
@@ -232,6 +252,42 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Labels | client_ip |
 | Source | Rate limiting middleware |
 
+### SQLite WAL File Size
+
+| Field | Value |
+|---|---|
+| Type | Gauge |
+| Description | Current size of the SQLite WAL file in bytes. Monitors write-ahead log growth that may indicate checkpoint pressure. |
+| Labels | none |
+| Source | Filesystem stat of SQLite WAL file at /health check time |
+
+### SQLite Write Contention
+
+| Field | Value |
+|---|---|
+| Type | Counter |
+| Description | Number of SQLITE_BUSY retries observed across all database writes |
+| Labels | operation: session_save, event_insert, reaper_delete, cleanup_delete |
+| Source | Database wrapper layer that catches SQLITE_BUSY and retries |
+
+### GitHub API Rate Limit Remaining
+
+| Field | Value |
+|---|---|
+| Type | Gauge |
+| Description | Minimum X-RateLimit-Remaining value observed across all repositories in the last scrape interval. Tracks headroom before retry storms. |
+| Labels | none |
+| Source | gh CLI call output parsed in pipeline bridge, exposed at /health check time |
+
+### Session Reaper Deletion Count
+
+| Field | Value |
+|---|---|
+| Type | Counter |
+| Description | Cumulative count of expired sessions deleted by the background session reaper |
+| Labels | none |
+| Source | Session reaper task after each run |
+
 ### Admin API Requests
 
 | Field | Value |
@@ -241,13 +297,22 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Labels | endpoint, status: 2xx, 4xx |
 | Source | Admin API route handlers |
 
+### Version Configuration Errors
+
+| Field | Value |
+|---|---|
+| Type | Counter |
+| Description | Startup failures due to missing or malformed versions.yaml (server exits after incrementing) |
+| Labels | error_type: file_missing, file_malformed |
+| Source | Startup initialization phase |
+
 ### HMAC Verification Failures
 
 | Field | Value |
 |---|---|
 | Type | Counter |
 | Description | Webhook events where HMAC verification failed |
-| Labels | none |
+| Labels | outcome: invalid_signature, missing_header |
 | Source | HMAC verifier middleware |
 
 ## Tracing
@@ -272,6 +337,8 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Readiness | Readiness | GET /health | All startup phases complete (versions.yaml loaded, skills repository cloned, token re-encryption if applicable, schema migrations applied), SQLite reachable, and the server is not in graceful-shutdown state. |
 | SQLite connectivity | Readiness | Implicit in /health handler | SQLite query (SELECT 1) succeeds |
 | Graceful drain | Liveness | /health during shutdown | Returns 503 when shutdown_event is set |
+| GitHub API reachability | Readiness (optional) | GET /health via dependency probe | Server can reach api.github.com (TCP connect). Degradation detected by pipeline failure alerts. Excluded from required readiness to avoid cascading failures when GitHub has an outage. |
+| LLM API reachability | Readiness (optional) | GET /health via dependency probe | Server can reach the configured LLM API endpoint (TCP connect). Degradation detected by pipeline failure alerts. Excluded from required readiness to avoid cascading failures when the LLM provider has an outage. |
 
 ## Alerts
 
@@ -349,7 +416,7 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 
 | Field | Value |
 |---|---|
-| Condition | session_reaper_deleted_count > 1000 |
+| Condition | increase(session_reaper_deletions_total[1h]) > 1000 |
 | Severity | Info |
 | For | At event time (check on reaper run) |
 | Runbook | 1. Check session_reaper_executed logs for deleted_count. 2. Review SESSIONS_MAX_AGE_HOURS. 3. If count is unexpectedly high, investigate possible session creation bug. |
@@ -375,20 +442,22 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 | Pipeline success rate | 99% | (pipeline_completed / (pipeline_completed + pipeline_failed)) per day. | Rolling 7 days |
 | Token refresh success rate | 99% | Successful refreshes / total refresh attempts per day. | Rolling 7 days |
 | Session durability on restart | 0 lost committed sessions | Sessions before restart vs. after restart on same Docker volume. | Per restart event |
+| Dispatch latency at max concurrency (p99) | 5 seconds | Per-repository dispatch latency measured when 10 repositories are concurrently active. Same measurement point as webhook dispatch latency SLO. | Rolling 7 days |
+| Aggregate event throughput | 10 events/second | Sustained event rate across all repositories averaged over 5-minute windows. | Rolling 7 days |
 
 ## Infrastructure Requirements
 
 | Requirement | Type | Notes |
 |---|---|---|
-| Expose /health endpoint counters as Prometheus metrics | Metric | Add /metrics endpoint or integrate with existing metrics exporter (e.g., prometheus-fastapi-instrumentator) |
 | Add structured logging middleware to FastAPI | Log | structlog already specified in architecture; ensure every middleware and route handler emits structured events |
-| Emit trace spans across webhook processing path | Trace | OpenTelemetry SDK integration; propagate trace_id through thread pool to pipeline execution |
-| Configure Prometheus to scrape /metrics | Metric | Prometheus target configuration |
-| Build Server Operations Dashboard | Dashboard | Grafana dashboard with panels for throughput, latency, error rates, active sessions, token refresh, rate limiting |
-| Configure alert routing | Alert | PagerDuty for Critical alerts, Slack for Warning/Info |
 | Add health check to container orchestrator | Health | Ensure Docker HEALTHCHECK or orchestrator liveness/readiness probes point to GET /health |
 | Instrument thread pool monitoring | Metric | Track queue depth, active thread count, rejected submissions |
-| Add OpenTelemetry span processor for trace export | Trace | Configure OLTP exporter or Jaeger endpoint |
+| *Expose Prometheus metrics endpoint* | Metric | Add /metrics endpoint (e.g., prometheus-fastapi-instrumentator). The specification scopes out Prometheus/OTEL as out of scope, relying on structured logs alone. However, the PromQL-based alert conditions defined in this plan (error rate ratios, latency histograms) require a Prometheus-compatible metrics backend. This is an additive dependency not covered by NFR-07's single-container constraint — add a Prometheus sidecar or use a hosted metrics service. |
+| *Configure Prometheus to scrape /metrics* | Metric | Prometheus target configuration (additive dependency per note above) |
+| *Build Server Operations Dashboard* | Dashboard | Grafana dashboard with panels for throughput, latency, error rates, active sessions, token refresh, rate limiting (additive dependency per note above) |
+| *Configure alert routing* | Alert | PagerDuty for Critical alerts, Slack for Warning/Info (additive dependency per note above) |
+| *Emit trace spans across webhook processing path* | Trace | OpenTelemetry SDK integration; propagate trace_id through thread pool to pipeline execution (additive dependency per note above) |
+| *Add OpenTelemetry span processor for trace export* | Trace | Configure OLTP exporter or Jaeger endpoint (additive dependency per note above) |
 
 ## Out of Scope
 
@@ -396,3 +465,4 @@ Monitor the hosted server's webhook ingestion pipeline, agent dispatch, token li
 - GitHub API response times for outbound calls: surfaced in existing engine structured logging, not server-specific
 - Per-repository storage growth metrics: 90-day retention window and cleanup task prevent unbounded growth; unnecessary at single-container scale
 - Client-side observability (browser metrics, user interaction): no browser client exists for this feature
+- Prometheus/OpenTelemetry metrics infrastructure: the specification scoped this out, relying on structured logs alone. The PromQL-based alert conditions in this plan require a Prometheus-compatible backend, which is an additive dependency. Items marked with * in Infrastructure Requirements are additive and would require updating the specification or accepting the additional dependency.
