@@ -2,6 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
+revision: 1
 ---
 
 # Telemetry: Client/Server architecture
@@ -120,6 +121,20 @@ The primary user is an operator managing the server for their repositories. End-
 | delivery_id | string | Yes | X-GitHub-Delivery header value |
 | repo_id | string | Yes | Repository UUID |
 | event_type | string | Yes | GitHub event type |
+| version | string | Yes | Agent version from repositories.version (e.g. "v1", "v2-canary") |
+| source | string | Yes | Always "server" |
+
+### pipeline_submission_failed
+
+**Trigger:** Thread pool queue full, cannot dispatch pipeline (run_in_executor submission fails)
+**Location:** Pipeline bridge on queue-full exception
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| delivery_id | string | Yes | X-GitHub-Delivery header value |
+| repo_id | string | Yes | Repository UUID |
+| event_type | string | Yes | GitHub event type |
+| reason | string | Yes | "thread_pool_queue_full" |
 | source | string | Yes | Always "server" |
 
 ### pipeline_completed
@@ -269,6 +284,42 @@ The primary user is an operator managing the server for their repositories. End-
 | fields_changed | array of strings | Yes | List of changed field names |
 | source | string | Yes | Always "server" |
 
+### admin_repository_registration_failed
+
+**Trigger:** POST /admin/repositories returned an error response
+**Location:** Admin API route handler
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| owner | string | Yes | GitHub owner |
+| repo | string | Yes | GitHub repository |
+| error_code | string | Yes | "ALREADY_EXISTS" or "INVALID_INPUT" |
+| source | string | Yes | Always "server" |
+
+### admin_repository_deregistration_failed
+
+**Trigger:** DELETE /admin/repositories/{owner}/{repo} returned an error response
+**Location:** Admin API route handler
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| owner | string | Yes | GitHub owner |
+| repo | string | Yes | GitHub repository |
+| error_code | string | Yes | "NOT_FOUND" |
+| source | string | Yes | Always "server" |
+
+### admin_repository_update_failed
+
+**Trigger:** PATCH /admin/repositories/{owner}/{repo} returned an error response
+**Location:** Admin API route handler
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| owner | string | Yes | GitHub owner |
+| repo | string | Yes | GitHub repository |
+| error_code | string | Yes | "INVALID_INPUT" or "NOT_FOUND" |
+| source | string | Yes | Always "server" |
+
 ### session_reaper_executed
 
 **Trigger:** Background session expiry reaper ran
@@ -305,7 +356,7 @@ The primary user is an operator managing the server for their repositories. End-
 | uptime_seconds | integer | Yes | Seconds since process start |
 | source | string | Yes | Always "server" |
 
-### reencryption_progress
+### re_encryption_progress
 
 **Trigger:** Token re-encryption batch progress logged during startup
 **Location:** Startup initialization phase
@@ -333,6 +384,7 @@ The primary user is an operator managing the server for their repositories. End-
 | Token refresh failure rate (per repo) | Repository may be silently disabled after 3 consecutive failures | Any single repo exceeds 2 consecutive failures |
 | HMAC verification failure rate | Possible misconfigured webhook secret or attempted forgery | > 1% of webhook events per repository per day |
 | Pipeline failure rate | Agent or pipeline errors degrading automation quality | > 5% of dispatched pipelines per day |
+| Pipeline submission failure rate | Thread pool saturated, events deferred or dropped | Any pipeline_submission_failed event per day |
 | Rate-limited request rate per IP | Potential webhook storm or misconfigured sender | > 100 events limited per IP per hour |
 | Session creation vs load ratio | Possible session expiry issues causing unnecessary re-creation | > 20% of session lookups result in new session creation |
 | Graceful shutdown cancellation count | Draining timeout may be too short | > 0 cancelled tasks in any shutdown event |
@@ -364,6 +416,7 @@ The primary user is an operator managing the server for their repositories. End-
   - Rate-limited request count per IP (last hour)
   - Graceful shutdown events (last 30 days)
   - Session reaper and event cleanup activity (deleted count per run)
+  - Session reaper contention rate (contention_detected ratio)
 
 - **Alerts:**
   - **Pager:** Repository auto-disabled by token refresh failure (investigate and re-enable via admin API)
