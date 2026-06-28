@@ -2,6 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
+revision: 1
 ---
 
 # Specification: Client/Server architecture
@@ -81,6 +82,8 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server that
 | updated_at | datetime | not null | ISO 8601 |
 | metadata | json | nullable | Extension fields (unknown keys preserved, never rejected) |
 
+The `gh_token` field stores sensitive GitHub credentials. At rest, the value is encrypted using AES-256-GCM with a key derived from the `TOKEN_ENCRYPTION_KEY` environment variable via HKDF. The encryption is transparent to application code: the session store encrypts on write and decrypts on read. If `TOKEN_ENCRYPTION_KEY` is not set, the server logs a warning at startup and stores tokens in plaintext (acceptable for development; production deployments must set this variable). Key rotation is performed by re-encrypting all stored tokens with the new key on server restart.
+
 Consumers must ignore unknown fields in response payloads. The `metadata` column exists for forward-compatible addition of backend-specific configuration without schema migration.
 
 ### `sessions`
@@ -113,7 +116,7 @@ Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `conversation_h
 | error | text | nullable | Error message if processing failed |
 | created_at | datetime | not null | ISO 8601 |
 
-The `webhook_events` table serves as an idempotency log and audit trail. The `delivery_id` unique constraint prevents duplicate processing when GitHub retries delivery. `status` is an open enum — consumers must handle unknown values gracefully by treating them as informational without breaking.
+The `webhook_events` table serves as an idempotency log and audit trail. The `delivery_id` unique constraint prevents duplicate processing when GitHub retries delivery. `status` is an open enum — consumers must handle unknown values gracefully by treating them as informational without breaking. New enum values are additive only; no existing value is removed without a major API version bump and at least one release cycle of deprecation notice.
 
 ## API Contracts
 
@@ -180,7 +183,7 @@ Returned when the same `X-GitHub-Delivery` was already processed. This is not an
 | 401 | INVALID_SIGNATURE | HMAC verification failed |
 | 404 | UNKNOWN_REPOSITORY | No registration matches `owner/repo` derived from the event |
 | 503 | SERVICE_UNAVAILABLE | Server is shutting down (graceful drain) |
-| 429 | RATE_LIMITED | Too many requests (optional, if rate limiting is added later) |
+| 429 | RATE_LIMITED | Too many requests (10 requests per second per IP, burst limit 20). Implemented via in-memory token bucket. Exemptions: health checks are not rate limited. |
 
 Error responses use a uniform envelope:
 
@@ -226,9 +229,19 @@ Returns server health status.
 
 Unknown fields may be added in future versions. Consumers must ignore them.
 
+### Admin API Authentication
+
+All `/admin/*` endpoints require authentication via an `Authorization` header. The server is configured with an `ADMIN_TOKEN` environment variable. The client must send:
+
+```
+Authorization: Bearer <admin-token>
+```
+
+Requests without a valid token receive HTTP 401 with code `UNAUTHORIZED`. Token rotation is performed by restarting the server with a new `ADMIN_TOKEN` value.
+
 ### POST /admin/repositories (optional, FR-09)
 
-Register a new webhook target.
+Register a new webhook target. Requires admin authentication.
 
 **Request**
 
@@ -286,6 +299,142 @@ Deregister a webhook target.
   }
 }
 ```
+
+### PATCH /admin/repositories/{owner}/{repo} (optional, FR-09)
+
+Update a registered repository's configuration. Requires admin authentication.
+
+**Request**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| secret_token | string | No | New HMAC secret for webhook verification |
+| gh_token | string | No | New GitHub API token |
+| active | boolean | No | Enable or disable event processing |
+| version | string | No | Agent version for canary |
+
+Unknown fields are accepted and stored in `repositories.metadata` for forward compatibility.
+
+**Response 200**
+
+```json
+{
+  "status": "updated",
+  "repository": {
+    "id": "uuid",
+    "owner": "my-org",
+    "repo": "my-repo",
+    "active": true
+  }
+}
+```
+
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
+| 404 | NOT_FOUND | Repository not registered |
+
+### GET /admin/repositories (optional, FR-09)
+
+List all registered repositories. Requires admin authentication.
+
+**Response 200**
+
+```json
+{
+  "repositories": [
+    {
+      "id": "uuid",
+      "owner": "my-org",
+      "repo": "my-repo",
+      "active": true,
+      "version": "v1",
+      "created_at": "2026-06-28T00:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+The `secret_token` and `gh_token` fields are never returned in list responses. Consumers must ignore unknown fields in each repository object.
+
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
+
+### GET /admin/repositories/{owner}/{repo}/sessions (optional, FR-09)
+
+List active sessions for a specific repository.
+
+**Response 200**
+
+```json
+{
+  "sessions": [
+    {
+      "id": "uuid",
+      "subject_type": "issue",
+      "subject_id": 42,
+      "conversation_length": 5,
+      "created_at": "2026-06-28T00:00:00Z",
+      "updated_at": "2026-06-28T01:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+Conversation content is excluded from list responses. Individual session detail may be added in a future endpoint.
+
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
+| 404 | NOT_FOUND | Repository not registered |
+
+### GET /admin/events (optional, FR-09)
+
+List webhook events with optional filtering by `repo_id` and `status`.
+
+**Request Query Parameters**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| repo_id | uuid | No | Filter by repository |
+| status | string | No | Filter by status (received, processing, completed, failed, skipped) |
+| limit | integer | No | Max results (default 50, max 200) |
+| offset | integer | No | Pagination offset (default 0) |
+
+**Response 200**
+
+```json
+{
+  "events": [
+    {
+      "id": "uuid",
+      "repo_id": "uuid",
+      "delivery_id": "abc-123",
+      "event_type": "push",
+      "status": "completed",
+      "created_at": "2026-06-28T00:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+The `payload` column is excluded from list responses to reduce response size. Consumers must ignore unknown fields in each event object.
+
+**Error Responses**
+
+| Status | Code | When |
+|---|---|---|
+| 401 | UNAUTHORIZED | Missing or invalid admin token |
 
 ## Sequences
 
@@ -402,24 +551,26 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 | Web framework | FastAPI + Uvicorn | Async-native, built-in OpenAPI docs, BackgroundTasks for non-blocking dispatch, lifespan events for graceful shutdown. Recommended by existing-solutions survey. |
 | Session persistence | SQLite (aiosqlite + WAL mode) | Zero-dependency, single-file, Docker-volume-mountable. Meets NFR-07 (single container). WAL mode allows concurrent reads during writes. Migration path to PostgreSQL if load grows. |
 | HMAC verification | stdlib `hmac.compare_digest` | Canonical GitHub reference implementation. No external dependency. Timing-safe comparison. |
-| Pipeline dispatch | `run_in_executor` (thread pool) | The existing engine is synchronous. Wrapping via thread pool avoids rewriting the pipeline in async. Bounded thread pool (max 20 workers) prevents resource exhaustion. |
+| Pipeline dispatch | `run_in_executor` (thread pool) | The existing engine is synchronous. Wrapping via thread pool avoids rewriting the pipeline in async. Bounded thread pool (max 20 workers) prevents resource exhaustion. If `run_in_executor` submission fails because the pool queue is full, the exception is caught and logged, the `webhook_events` row is updated to `status=failed`, and the HTTP response (already sent as 200) is supplemented by the logged error. This is an at-most-once delivery: the event is received and acknowledged but execution is deferred or failed. |
 | Env var isolation | Parameter injection with env var fallback | Server passes all context as function parameters to pipeline code. CLI path continues using env vars. Eliminates race condition under concurrent multi-repo execution without changing CLI behavior. |
-| Retry strategy | 3 attempts, exponential backoff (1s/2s/4s), `CalledProcessError` only | Matches NFR-06. Only retries on non-zero subprocess exit (transient errors). Immediate re-raise on other exceptions. Failure logged at ERROR; pipeline continues to next step. |
+| Retry strategy | 3 attempts (initial + 2 retries), exponential backoff (delays 1s, 2s), `CalledProcessError` and API-level transient indicators | Matches NFR-06. Retries on `subprocess.CalledProcessError` (non-zero exit) and on zero-exit cases where stderr or stdout indicates an API-level retryable condition (e.g., HTTP 429/5xx in `gh` response output, rate-limit headers). The 4s backoff from the exponential pattern is never reached because max 3 attempts are made. Immediate re-raise on other exceptions (e.g., `FileNotFoundError`). Failure logged at ERROR; pipeline continues to next step. |
 | Webhook idempotency | Dedup via `X-GitHub-Delivery` unique constraint | SQLite unique constraint on `delivery_id`. Duplicates get HTTP 409 with `reason: duplicate_delivery`. At-most-once agent execution per delivery. |
 | Graceful shutdown | Uvicorn lifespan handler + `asyncio.Event` + task tracking | Set shutdown flag, reject new requests with 503, drain in-flight tasks (max 30s), cancel stragglers, exit. |
 | Structured logging | `structlog` with JSON output | Server emits structured events for webhook receipt, HMAC result, rule matches, agent execution, gh calls, retries, and errors. CLI path unchanged (plain-text). |
+| Rate limiting | In-memory token bucket (10 req/s per IP, burst 20) | Protects against webhook storms and accidental misconfiguration. Token bucket is stateless and resets on server restart. Health checks are exempt. Rate-limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) are returned in all 429 responses. |
 | Skill file distribution | Clone agent repository at container startup | Simplest approach. The `AGENTS_REPOSITORY` is cloned on first webhook event or at startup. Cold-start latency is acceptable vs. rebuild on every skill change. Can be overridden via Docker volume mount. |
-| Forward compatibility | Open enums, unknown field tolerance, additive-only contract | All schemas document that consumers must ignore unknown fields. Enum values that are not recognized must be handled without error. New fields are always optional. API version is the `version` field in health response and `repositories.version` for canary. |
+| API versioning | URL prefix-based (`/v1/webhook`, `/v1/admin/repositories`). Additive-only within a major version. Breaking changes require a new major version with a documented deprecation window. | All endpoints are versioned via URL prefix. Future major versions (e.g., `/v2/webhook`) may change behavior. The current `/webhook`, `/health`, and `/admin/*` paths are aliases for `/v1/*`. The version in the health response (`version` field) is the API version, not the server build. Deprecation window: at least one minor release cycle between announcement and removal of a deprecated version. New optional fields can be added at any minor version without a deprecation period. |
+| Forward compatibility | Open enums, unknown field tolerance, additive-only contract | All schemas document that consumers must ignore unknown fields. Enum values that are not recognized must be handled without error. New fields are always optional. API version is the `version` field in health response and `repositories.version` for canary. New enum values are additive only; no existing enum value is removed without a major version bump and a deprecation window of at least one release cycle. |
 
 ## Risks and Unknowns
 
-1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: per-repo `asyncio.Lock` serializes writes per session. Escalation path: migration to PostgreSQL (schema-compatible change).
+1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: a per-session `asyncio.Lock` serializes writes within each session (keyed by `(repo_id, subject_type, subject_id)`). This allows concurrent writes across different sessions while preventing write interleaving within a single session's conversation history. Escalation path: migration to PostgreSQL (schema-compatible change).
 2. **Thread pool exhaustion**: If all 20 thread pool workers are occupied by long-running agent executions, new webhooks queue up and risk violating NFR-03 (5s dispatch). Mitigation: monitor pool queue depth; alert at 80% utilization. The bounded pool prevents OOM but may delay dispatch.
 3. **`opencode` CLI version drift**: The Docker image pins an `opencode` version. If the agent CLI evolves, the server image must be rebuilt. Mitigation: make `opencode` version a build arg in the Dockerfile.
 4. **Skill file distribution**: Cloning the agent repository at startup may fail or time out. Mitigation: retry with backoff; fall back to a cached clone if available; document that a volume mount is the production-reliable approach.
 5. **Behavioral identity verification**: The refactored pipeline must produce identical outcomes for the same input as the CLI path. Mitigation: run the acceptance criteria suite against both paths in CI before deploying the server.
 6. **GitHub API rate limits**: All outbound GitHub API calls share the per-repository token. Rate limit exhaustion blocks agent outcomes. Mitigation: retry with backoff (NFR-06); log rate-limit headers for monitoring.
-7. **No TLS termination in the server**: The specification does not mandate TLS in the container. In production, a reverse proxy (nginx, Caddy) or load balancer terminates TLS. The server listens on HTTP only.
+7. **No TLS termination in the server**: The server listens on HTTP only. TLS termination is expected to be handled by a reverse proxy (nginx, Caddy, or a cloud load balancer) deployed in front of the container. **Deployment guidance**: the reverse proxy must support HTTP/1.1 (for GitHub webhook delivery) and should be configured with a TLS certificate from Let's Encrypt or a commercial CA. Health checks from the load balancer should target `GET /health` on the HTTP port. The server exposes `PORT` (default 8080) as the listen address.
 
 ## Out of Scope
 
@@ -428,5 +579,5 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 - **Multi-host deployment**: The specification targets a single Docker container. Horizontal scaling, load balancing, and shared SQLite across hosts are not covered.
 - **Admin dashboard UI**: FR-09 specifies a REST API only. No web UI is specified.
 - **Metrics export**: No Prometheus, OpenTelemetry, or statsd export is specified. Structured logs are the observability channel.
-- **Webhook secret rotation**: No endpoint or mechanism for rotating `secret_token` is specified. Operators update the `repositories` table directly.
+- **Webhook secret rotation**: The initial specification does not include a dedicated rotation endpoint. Operators update the `secret_token` field via `PATCH /admin/repositories/{owner}/{repo}` (which accepts an optional `secret_token` field to replace the existing value) or by direct SQLite update. A future version may add a rotation schedule and expiry tracking.
 - **Database migrations**: The initial schema is created at server startup via `CREATE TABLE IF NOT EXISTS`. No migration framework is specified. Schema changes are applied manually or via a migration script.
