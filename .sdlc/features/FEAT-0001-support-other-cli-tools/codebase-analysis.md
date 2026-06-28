@@ -2,7 +2,7 @@
 issue: "#18"
 title: "Support other harness CLI"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Codebase Analysis: Support Other Harness CLI
@@ -115,17 +115,19 @@ run_rule.py:_execute_rule
 - **Change disposition:** Replace
 - **Rationale:** The function must become runtime-aware on multiple axes:
   - **Command selection:** if `agent.command` is set, invoke that instead of the hardcoded opencode command. String commands are split with `shlex.split` (never `shell=True`). List commands are used as-is.
-  - **Pre-execution validation (FR-06):** if `agent.command` is set, validate the executable exists on `PATH` (or the full path is resolvable) before invoking. Fail fast with a clear error listing the command name and the directories searched.
+  - **Template expansion (FR-01):** if `agent.command` is a string containing `{{...}}` placeholders, expand them before splitting. Supported variables: `{{prompt}}` (the prompt text for `prompt`-kind steps), `{{prompt_file}}` (path to a temp file holding the prompt text), `{{model}}` (resolved model name), `{{ref}}` (step ref — skill name or prompt path), `{{kind}}` (step kind: `skill` or `prompt`), and `{{env.VAR}}` (any environment variable from `agent.env` or the process env). Unknown placeholders are left as-is (so external tools like shell formatters can use their own syntax).
+  - **Pre-execution validation (FR-06):** if `agent.command` is set, validate the executable exists on `PATH` (or the full path is resolvable) before invoking. After template expansion, validate the first token of the resolved command. Fail fast with a clear error listing the command name and the directories searched.
   - **Setup hooks (FR-04):** if `agent.setup` is set, run it as a subprocess before the agent, aborting if it exits non-zero.
   - **Environment variables (FR-07):** if `agent.env` is set, merge it into the subprocess environment.
   - **Verdict parser (FR-03):** if `agent.verdict_parser` is set, capture agent stdout, pipe to parser subprocess, read parser exit code. Map exit code to `$OUTCOME_YAML` internally (engine writes the file, not the parser). Default: use the agent's own exit code and its `$OUTCOME_YAML` output (preserving today's behavior for opencode).
   - **Timeout (NFR-01):** use the existing `timeout_minutes` for the agent command. Apply a separate 30s default timeout for the verdict parser subprocess.
   - **Logging (NFR-04):** log the configured agent command at DEBUG before execution and the exit code at DEBUG after execution.
   - **Backward compatibility (NFR-02):** when `command` is `None`, behavior must be byte-identical to today.
-- **Risk:** Medium — the subprocess invocation logic must handle command splitting, timeout propagation (two levels: agent + parser), stderr capture, verdict parser orchestration, and pre-flight validation.
+- **Risk:** Medium — the subprocess invocation logic must handle template expansion (variable substitution with proper escaping and temp file lifecycle), command splitting, timeout propagation (two levels: agent + parser), stderr capture, verdict parser orchestration, and pre-flight validation.
 - **Constraints:**
   - Backward compatible at the default (`command=None` means opencode as today).
   - String commands are shlex-split; list commands used as-is. Never use `shell=True` by default.
+  - Template expansion happens before `shlex.split`, so `{{prompt}}` with spaces expands correctly.
   - Must preserve `subprocess.run(cmd, check=True)` behavior for the default path (opencode).
   - Must surface stderr on error for any failing subprocess.
   - Must not import or require the configured CLI at engine install time.
@@ -193,10 +195,11 @@ run_rule.py:_execute_rule
 2. **Custom command path** (`command` is set):
    - Pre-flight: validate command exists on `PATH` (or is a valid absolute path). Fail fast with a clear error.
    - Setup: if `agent.setup` is set, run as subprocess with `check=True`. Abort on failure.
-   - Execute: parse `command` (string -> `shlex.split`, list -> use as-is), merge `agent.env` into subprocess environment, invoke with `subprocess.run(cmd, capture_output=True, timeout=timeout_minutes)`.
+   - Template expansion: replace `{{prompt}}` with the prompt text (for `prompt`-kind steps), `{{prompt_file}}` with the path to a temporary file holding the prompt (created before execution, cleaned up after), `{{model}}`/`{{ref}}`/`{{kind}}` with their resolved values, and `{{env.VAR}}` with the corresponding env var from `agent.env` or process environment. Unknown placeholders are left verbatim. Expansion runs before `shlex.split`.
+   - Execute: parse expanded `command` (string -> `shlex.split`, list -> use as-is), merge `agent.env` into subprocess environment, invoke with `subprocess.run(cmd, capture_output=True, timeout=timeout_minutes)`.
    - Parsing: if `verdict_parser` is set, pipe agent stdout to parser subprocess with 30s timeout, read parser exit code. Map to `$OUTCOME_YAML` (`verdict: approved` / `changes-requested` / `rejected`) and write the YAML file.
    - Default parsing: if no `verdict_parser`, rely on the agent's own exit code: 0 = approved, non-zero = rejected. Write `$OUTCOME_YAML` with this mapping. The agent's own `$OUTCOME_YAML` output (if any) is ignored — the engine owns the file for custom commands.
-   - Logging: log the resolved command at DEBUG before execution. Log exit code at DEBUG after execution.
+   - Logging: log the resolved (expanded) command at DEBUG before execution. Log exit code at DEBUG after execution.
 
 **Backward compatibility:** The `command=None` path must produce identical behavior, including identical error output. The existing `subprocess.run(cmd, check=True)` call should be preserved as the default branch. Add a test that snapshots the current call arguments and asserts they match.
 
@@ -272,3 +275,5 @@ This design keeps the parser contract minimal (exit code only, no file system si
 4. Should the verdict parser receive step metadata (step name, workflow ID, event payload) via environment variables, or is the exit-code-only contract sufficient? Requirements specify stdout-only, so start minimal. Metadata can be added in a later iteration.
 5. Can the `--list-runtimes` feature (FR-08) be resolved by scanning built-in parsers + user-defined parser path at startup, or does it need a registration mechanism? Scanning is sufficient for v1.
 6. Should sandboxing (NFR-03) use environment restriction (drop `GH_TOKEN`, restrict `PATH`) or container-based isolation (bubblewrap, nsjail)? Environment restriction is the practical first step; container isolation is a hardening option. The parser interface should be designed so container wrapping is a transparent addition later.
+7. For `{{prompt_file}}`, should the engine create a temporary file during `_run_agent` (and clean up afterward), or should prompt-kind steps always write the prompt to a known location (e.g., `$RUNNER_TEMP/prompt.md`) before the agent runs? Temp file creation keeps the scope local but requires careful cleanup (handle signal/kill). A known-location approach is simpler but couples the workflow step to the agent step. Temp file with `tempfile.NamedTemporaryFile(delete=False)` + cleanup in a `finally` block is recommended.
+8. When `agent.command` contains `{{prompt}}` (inline prompt text), the expanded value may be very large (multi-kilobyte prompt body). Does the target CLI accept the prompt as a command-line argument, or should `{{prompt}}` imply creating a temp file and substituting the path instead? The analysis currently treats `{{prompt}}` as inline text substitution; CLI authors should use `{{prompt_file}}` for large prompts. Document this distinction.
