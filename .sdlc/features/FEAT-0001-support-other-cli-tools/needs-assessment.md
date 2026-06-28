@@ -1,7 +1,7 @@
 ---
 issue: "#18"
 title: "Support other harness CLI"
-status: draft
+status: approved
 ---
 
 # Needs Assessment: Support Other Harness CLI
