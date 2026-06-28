@@ -25,3 +25,11 @@ Open questions from feasibility review:
 10. Is the assumption that the flows engine can be extended with new express-flow rules without refactoring existing flow matching logic validated? This should be recorded as an assumption and verified.
 
 11. Does the triage-issue skill external repo have a release process that guarantees lockstep shipping with this project's flow config? If not, what fallback behavior applies during the gap?
+
+Open questions from specification review:
+
+12. How does the express flow rule verify label origin for anti-spoofing (NFR-05) without engine changes? This contradicts the zero-engine-changes design decision and must be resolved before implementation.
+
+13. Can `create-implementation` produce output from "issue body + labels only" without modification? The spec should verify this before shipping the express path.
+
+14. How does `defaults.express` config flow to the triage classification logic? No engine component currently reads these keys.

@@ -6,54 +6,48 @@ reviewed_at: 2026-06-28
 
 ## Ambiguities
 
-**What "configurable criteria" means concretely.** The spec references a `defaults.express` block in `flows.yml` but does not define its fields (e.g., which complexity values qualify, whether issue label or body heuristics are used). The requirements define FR-01 as "configurable criteria" but the spec defers the actual schema to an unspecified config block.
-
-**`express-decision.md` schema does not record the classification's "why."** FR-03 requires "an artifact recording that the express path was used and why." The schema has `trigger`, `complexity`, and `outcome`, but no `reason` field capturing the triage rationale. The "why" is only partially derivable from the combination of fields.
-
-**Who runs `create-pr`?** The sequence diagram shows `on_outcome: approved` creating a PR "via create-pr skill," but the express flow's `on_outcome` only defines label transitions. It is unclear whether the flow engine itself invokes `create-pr` or whether `create-implementation` is responsible for triggering the PR creation.
+**Anti-spoofing verification mechanism is underspecified.** The spec says the flow rule "MUST check that the label was applied by the automation (e.g., by verifying the issue timeline or requiring that `llmaw:express-eligible` was set in the same workflow run)." The "e.g." lists two approaches but does not commit to one. The existing flow engine (`engine.py:matches()`) has no concept of label origin — it matches solely on label name. Whichever approach is chosen will require either engine changes or a different architectural pattern. The spec should specify which approach is used.
 
 ## Inconsistencies
 
-**Artifact trail vs. "no planning artifacts."** FR-02's acceptance criterion states "no requirements, existing-solutions, ... plan artifacts exist for this feature," yet the spec introduces `express-decision.md` under `.sdlc/features/`. The intent is clearly "no planning-phase artifacts," but the wording in the requirement could cause conflict with the new artifact. Minor, but worth aligning.
+**`when.labels` (plural, array) does not match the engine's `when.label` (singular, string).** The spec's flow rule table defines `when.labels` as an array of two labels (`llmaw:express-eligible`, `llmaw:quick-implement`). The engine's `When` dataclass (`engine.py:30-36`) uses `label: str | None` (singular string), and `parse_when()` reads `raw.get("label")`. The `matches()` function compares `when.label` against the single label in the event payload (`payload.get("label", {}).get("name")`). The express rule cannot match two different labels in a single rule given the current engine schema. The spec must either define separate rules per trigger label or modify the engine to support `when.labels` (array).
 
-**Label state machine shows `create-implementation` then `on_outcome`, but `on_outcome.approved` relies on `create-pr`.** The express flow's `on_outcome` table shows `approved` → "Set llmaw:express-done, create PR." If `create-pr` is a separate skill, who calls it? The sequence diagrams hand-wave this as "creates PR via create-pr skill" outside the flow engine's `on_outcome` semantics.
+**`issues:opened` is listed as a trigger but cannot match the express flow under normal conditions.** The express flow rule lists `when.event: issues:opened` alongside `issues:labeled`. On `issues:opened`, there is no label in the event payload (the triage flow runs first and sets the label on a separate `issues:labeled` event). The engine's `matches()` compares `when.label` against `payload.label.name`, which is absent on `issues:opened`, so the rule would never match. Only `issues:labeled` is a valid trigger for the express flow. Either remove `issues:opened` or document the pre-condition under which it would match (e.g., issue created with `llmaw:quick-implement` pre-applied via API).
+
+**`defaults.express` config keys are referenced but not consumed by any engine code.** The spec defines a `defaults.express` block in `flows.yml` with fields like `eligibility.complexity_values`, `max_issue_body_chars`, etc. The engine reads `defaults` only for `model`, `agents_repository`, and `timeout_minutes` (`engine.py:189, 168-172`). None of the express-specific config keys are read by any current engine code. The spec does not specify which component reads this config or how it flows to the triage classification step. This is a gap between the config schema and the consuming logic.
 
 ## Incoherences
 
-**`create-implementation` depends on upstream artifacts it won't have.** The risks section correctly identifies that `create-implementation` may depend on requirements, specifications, and codebase-analysis artifacts. Yet the spec runs it without those artifacts. This is flagged as a risk but is also a design tension: if the dependency is hard (not just a soft recommendation), the express path cannot work without changes to `create-implementation`.
+**Anti-spoofing (NFR-05) contradicts the "zero engine changes" claim.** The spec states in Technical Decisions: "Flow model: New express flow in `flows.yml` — Mirrors the existing bugfix pattern; requires zero engine changes; orthogonal to existing flows." However, the Anti-spoofing section (line 90) says the flow rule "MUST check that the label was applied by the automation" and "MUST verify that the triage verdict exists and matches before routing." The engine's `matches()` function (`engine.py:233-258`) has no capability to verify label origin or cross-reference the triage verdict. Implementing NFR-05 requires either: (a) modifying the engine to add origin verification, (b) moving the check into the rule's deterministic steps, or (c) using a different label (not `llmaw:express-eligible`) as the trigger. The spec must reconcile this tension: either acknowledge that engine changes are required or specify a mechanism that uses existing engine capabilities.
+
+**`create-implementation` dependency on planning artifacts remains unresolved.** The spec acknowledges this as a risk but lists it as "Out of Scope" (line 357). The entire express path hinges on `create-implementation` functioning from "issue body + labels only." If the skill hard-depends on requirements or specification artifacts (e.g., imports them as context), the express path cannot ship without modifying `create-implementation`. The spec should either specify the minimal interface contract that `create-implementation` must satisfy (making the dependency explicit) or commit to modifying it.
 
 ## Missing Information
 
-**NFR-05 (anti-spoofing) is entirely unaddressed.** The requirements state: "The classification logic shall reject attempts to spoof eligibility via label manipulation on issues that do not meet the configured criteria." The spec defines no guard against a human (or a compromised actor) manually applying `llmaw:express-eligible` to skip planning on a complex feature. The `llmaw:quick-implement` label is intentionally a bypass, but `llmaw:express-eligible` should be auto-only.
+**NFR-01 (token savings) has no concrete target or measurement method.** The text in Risks (line 351) suggests "A 40%+ reduction is a reasonable initial target" but this is not a spec-level commitment. The spec must define a measurable success criterion (e.g., "express path consumes at most 60% of the full pipeline's token count for comparable features") and how it will be measured.
 
-**FR-05 (classification logging) is partially covered.** The requirement says "log the classification decision and rationale to the issue or a corresponding artifact." The spec writes to `express-decision.md` but does not specify posting a comment on the issue. The triage skill's `$OUTCOME_YAML` carries the reason, but it is not clear whether that reason surfaces to the issue or only lives in the engine's internal state.
-
-**FR-06 (removing label to route to full pipeline) is not specified.** The requirement's acceptance criteria cover both adding and removing the express label. The spec only covers the manual override via `llmaw:quick-implement` (add label → express). It does not address the inverse: an eligible issue whose express label is removed should fall back to the full pipeline on the next cycle.
-
-**No performance targets or SLAs.** NFR-01 requires the express path to "complete in fewer total tokens than the full pipeline" but no concrete target, baseline measurement, or verification method is defined.
-
-**No LLM provider or model configuration for `defaults.express`.** The spec mentions a `defaults.express` config block but does not specify its fields (model selection, token budget, timeout, retry policy).
+**NFR-02 (code quality) is not addressed.** The requirements state: "The express path shall not reduce code quality below the standard of the full pipeline; implementations must still pass normal CI checks." The spec does not define what "standard of the full pipeline" means or how code quality is verified beyond CI checks (which the full pipeline also passes). If the full pipeline produces more robust code through its planning phases (spec-driven, reviewed), the spec should acknowledge the quality delta risk and define compensating measures or an acceptance threshold.
 
 ## Implementability
 
-**`create-implementation` must work without planning artifacts.** This is the central implementability risk. The spec treats `create-implementation` as a black box that "produces implementation + tests" from "issue body + labels only." If the current `create-implementation` skill requires requirements or specification artifacts to function (reading them as context), the express path will fail on every run until `create-implementation` is modified to work from issue content alone. The spec says this is "tested as-is, modified separately if needed" but that makes the entire feature contingent on a change in another component without defining the interface.
+**Express flow needs two rules, not one.** Because the engine's `when.label` matches a single label name, the express flow must define two separate rules in `flows.yml`:
+1. `express-implement-from-eligible` — matches `issues:labeled` + `label: llmaw:express-eligible`
+2. `express-quick-implement` — matches `issues:labeled` + `label: llmaw:quick-implement`
 
-**Cross-repo coordination is not specified in detail.** The `triage-issue` skill lives in `tomzx/agents` while the express flow lives in this repository. The spec notes this as a risk but does not define the deployment ordering, version compatibility strategy, or how the consuming flow detects that the triage skill has been updated to emit the `complexity` field.
+Alternatively, the engine must be extended to support `when.labels` (array). Either option should be specified explicitly.
 
-**No explicit interface contract for the `defaults.express` config block.** The spec references it but does not define its shape. Without a schema, the implementation cannot be validated against the configuration.
+**`create-implementation` agent step's PR creation depends on GitHub token scopes.** The spec delegates PR creation to the `create-implementation` agent step via internal `create-pr` or `gh`. The agent step runs in the Actions workflow token context, which may have branch creation and PR creation scopes. This is not documented in the spec. If the token lacks these scopes, the express path will silently fail at the PR-creation step.
 
 ## Reversibility
 
-**Terminal labels (`llmaw:express-done`, `llmaw:express-failed`) are irreversible within the flow engine.** The spec labels them "Terminal." Once set, the flow engine will not re-process the issue through any path (express or full). A human would need to manually remove the label to re-trigger processing. This is a one-way-door decision for each issue. This should be called out explicitly as a design commitment.
-
-**No cleanup of `express-decision.md` if an express-path feature is later re-processed through the full pipeline.** If an issue gets `llmaw:express-failed` and a human later removes it and triggers the full pipeline, the old `express-decision.md` artifact persists with a `failed` outcome. This could cause confusion for future readers.
+No issues found. Terminal labels, artifact persistence, and retry semantics are all explicitly documented as design commitments.
 
 ## Forward Compatibility
 
-**The spec does well on forward compatibility for `flows.yml` rules and verdict schemas** (unknown fields, new labels, default `_` handler for verdicts). These are explicitly documented.
+No issues found. The spec has strong forward-compatibility practices: `schema_version` on the decision artifact, unknown-field tolerance on all YAML schemas, and extensibility notes for enum growth and new config keys.
 
-**`express-decision.md` artifact schema is not versioned.** If the schema evolves (e.g., adding `duration_seconds`, `model_used`), consumers reading old artifacts have no indicator of which schema version to expect.
+## Unresolved Open Questions
 
-**Enum growth for `complexity` values is not addressed.** The spec says `low | medium | high`, and treats absent as "not eligible." If a new value like `trivial` or `very-high` is added later, consumers must not crash. The spec does not document this tolerance.
-
-**`triage-issue` verdict YAML is documented as extensible** (consumers MUST ignore unknown fields). Good.
+1. How does the express flow rule verify label origin for anti-spoofing (NFR-05) without engine changes? This contradicts the zero-engine-changes design decision and must be resolved before implementation.
+2. Can `create-implementation` produce output from "issue body + labels only" without modification? The spec should verify this before shipping the express path.
+3. How does `defaults.express` config flow to the triage classification logic? No engine component currently reads these keys.
