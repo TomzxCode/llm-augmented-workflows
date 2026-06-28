@@ -2,7 +2,7 @@
 issue: "#17"
 title: "Implement directly from issue"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Specification: Implement directly from issue
@@ -160,7 +160,7 @@ A new `express` top-level key in `flows.yml` with two rules that match on differ
 
 The `create-implementation` agent step is responsible for producing the code changes AND creating the PR (by invoking the `create-pr` skill internally or using `gh` directly before it exits). The `on_outcome` handler only manages labels and comments; it does not create the PR. This keeps the PR-creation logic inside the agent step where it can access the implementation branch and commit SHA.
 
-The `issues:labeled` event is the only trigger for both rules. On `issues:opened`, the triage flow runs first and sets `llmaw:express-eligible` as part of its `on_outcome` deterministic steps; that label change fires a subsequent `issues:labeled` event which matches the express rule. If an issue is created with `llmaw:quick-implement` pre-applied (e.g., via API), the `issues:opened` event carries the label in its payload and the express rule matches on that single event — but this is an edge case. The principal trigger is always `issues:labeled`.
+The `issues:labeled` event is the sole trigger for both rules. On `issues:opened`, the triage flow runs first and sets `llmaw:express-eligible` as part of its `on_outcome` deterministic steps; that label change fires a subsequent `issues:labeled` event which matches the express rule. If a human adds `llmaw:quick-implement` after creation, the label change fires `issues:labeled` and matches the express-quick-implement rule. Labels applied pre-creation are not matched because `when.event: issues:labeled` only fires on label changes, not on issue creation.
 
 **Forward compatibility:** Consumers must ignore unknown fields in any rule schema. New rule entries may be added for additional trigger labels without breaking existing rules.
 
