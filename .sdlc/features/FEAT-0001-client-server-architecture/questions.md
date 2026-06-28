@@ -15,6 +15,8 @@ source: needs-assessment.md
 7. What is the expected schema of `versions.yaml` for canary deployment configuration (model identifier, prompt template, skill repo reference, max iteration count)?
 8. Should the POST/PATCH /admin/repositories response include `version` and `created_at` for consistency with the GET list response?
 
+9. How should GitHub App installation tokens be refreshed? The `gh_token` field accepts either a PAT or an installation token, but installation tokens expire after 1 hour. The server needs a periodic refresh mechanism (e.g., using the `GH_APP_ID` and `GH_APP_PRIVATE_KEY` to generate a new JWT and exchange it for a fresh installation token) or should document that only PATs are supported in the initial version.
+
 ## Resolved
 
 - Session state persistence (was Q3 in requirements): resolved to local disk (SQLite) with Docker volume mount, per conflict resolution in requirements.md.
