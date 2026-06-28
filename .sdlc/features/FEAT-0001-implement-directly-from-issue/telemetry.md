@@ -2,7 +2,7 @@
 issue: "#17"
 title: "Implement directly from issue"
 status: in-review
-revision: 3
+revision: 4
 ---
 
 # Telemetry: Implement directly from issue
@@ -84,7 +84,7 @@ This feature adds an express path that routes eligible issues directly from tria
 ### implementation_started
 
 **Trigger:** `create-implementation` agent step begins execution
-**Location:** GitHub Actions workflow logs for the express flow rule
+**Location:** Emitted by a shell step immediately before the agent invocation step in the express flow rule in `flows.yml`, using `echo "TELEMETRY_EVENT:{...}" >> $GITHUB_STEP_SUMMARY`
 
 | Property | Type | Required | Description |
 |---|---|---|---|
@@ -129,7 +129,7 @@ This feature adds an express path that routes eligible issues directly from tria
 ### workflow_step_failed
 
 **Trigger:** An upstream infrastructure step fails (triage skill crash, label application failure via `gh issue edit`, workflow dispatch error, or missing outcome YAML)
-**Location:** GitHub Actions workflow run logs; inferred from step failure in the workflow
+**Location:** Emitted by a `failure()` handler in `flows.yml` for the triage and express flow rules, using `echo "TELEMETRY_EVENT:{...}" >> $GITHUB_STEP_SUMMARY` with step_name, error_type, and error_message extracted from the workflow context
 
 | Property | Type | Required | Description |
 |---|---|---|---|
@@ -171,7 +171,7 @@ Each JSON log line appears on its own line prefixed with `TELEMETRY_EVENT:` so i
 |---|---|---|---|
 | issue_number | number | Yes | GitHub issue number |
 | label_removed | string | Yes | `llmaw:express-eligible` or `llmaw:quick-implement` |
-| previous_labels | string[] | Yes | Labels remaining on the issue after removal |
+| remaining_labels | string[] | Yes | Labels remaining on the issue after removal |
 | source | string | Yes | `server` |
 
 ## Counter Metrics
