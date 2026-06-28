@@ -2,7 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Specification: Client/Server architecture
@@ -82,7 +82,11 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server that
 | updated_at | datetime | not null | ISO 8601 |
 | metadata | json | nullable | Extension fields (unknown keys preserved, never rejected) |
 
-The `gh_token` field stores sensitive GitHub credentials. At rest, the value is encrypted using AES-256-GCM with a key derived from the `TOKEN_ENCRYPTION_KEY` environment variable via HKDF. The encryption is transparent to application code: the session store encrypts on write and decrypts on read. If `TOKEN_ENCRYPTION_KEY` is not set, the server logs a warning at startup and stores tokens in plaintext (acceptable for development; production deployments must set this variable). Key rotation is performed by re-encrypting all stored tokens with the new key on server restart.
+The `gh_token` field stores sensitive GitHub credentials. At rest, the value is encrypted using AES-256-GCM with a key derived from the `TOKEN_ENCRYPTION_KEY` environment variable via HKDF. The encryption is transparent to application code: the session store encrypts on write and decrypts on read. If `TOKEN_ENCRYPTION_KEY` is not set, the server logs a warning at startup and stores tokens in plaintext (acceptable for development; production deployments must set this variable).
+
+**Key rotation procedure:** To rotate the encryption key, the operator provides both `TOKEN_ENCRYPTION_KEY_OLD` (the current key) and `TOKEN_ENCRYPTION_KEY` (the new key) as environment variables at startup. The server reads every token from the database, decrypts with `TOKEN_ENCRYPTION_KEY_OLD`, re-encrypts with `TOKEN_ENCRYPTION_KEY`, and writes the updated ciphertext. After a successful rotation, `TOKEN_ENCRYPTION_KEY_OLD` is unset and only `TOKEN_ENCRYPTION_KEY` is retained. If `TOKEN_ENCRYPTION_KEY_OLD` is not provided, a normal startup proceeds (existing tokens are decrypted with `TOKEN_ENCRYPTION_KEY`).
+
+**Migration from plaintext to encryption (and back):** When `TOKEN_ENCRYPTION_KEY` is first set after a period of running without it, the server re-encrypts all plaintext tokens on startup. To decrypt (returning to development mode), set `TOKEN_ENCRYPTION_KEY` to the current key and `TOKEN_ENCRYPTION_KEY_OLD` to empty — the server decrypts all tokens to plaintext and logs a warning. This path exists only for development and disaster recovery; production deployments should always set `TOKEN_ENCRYPTION_KEY`.
 
 Consumers must ignore unknown fields in response payloads. The `metadata` column exists for forward-compatible addition of backend-specific configuration without schema migration.
 
@@ -102,6 +106,10 @@ Consumers must ignore unknown fields in response payloads. The `metadata` column
 
 Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `conversation_history` field stores the agent's conversation as a JSON array; each entry has `role` (user/assistant/system), `content`, and `timestamp`. The `context` field stores pipeline state. Consumers must preserve unknown fields in both JSON columns across read-write cycles (read-modify-write must retain unrecognized keys).
 
+**Session expiry and cleanup:** Sessions expire after 7 days of inactivity (no new webhook events for that `(repo_id, subject_type, subject_id)` key). Expiry is checked lazily: when a new webhook event arrives for an expired session, the server creates a fresh session instead of loading the stale one. A background reaper task runs every hour, deleting sessions whose `updated_at` is older than a configurable `SESSION_TTL_HOURS` (default 168, i.e., 7 days). The reaper logs its deletion count and skips if database contention is detected (SQLITE_BUSY). Session count is tracked in the `/health` endpoint as active (non-expired) sessions. The `SESSIONS_MAX_AGE_HOURS` environment variable overrides the default TTL.
+
+The `repositories.version` field supports canary deployments (FR-10) by selecting runtime configuration variants within a single container. The server maintains a mapping from version strings (e.g., `"v1"`, `"v2-canary"`) to agent configuration bundles: model identifier, system prompt template path, skill repository reference, and maximum iteration count. When processing a webhook for a repository with `version: "v2-canary"`, the server selects the `v2-canary` config bundle. All versions share the same engine code and binary; only the configuration differs. The set of available versions is defined in a YAML file mounted into the container (`/etc/llmaw/versions.yaml`), and the default version (`"v1"`) is always present. This approach satisfies multi-version support within NFR-07's single-container constraint. Future growth to separate binaries would require breaking NFR-07 or switching to a sidecar model.
+
 ### `webhook_events`
 
 | Field | Type | Constraints | Description |
@@ -117,6 +125,21 @@ Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `conversation_h
 | created_at | datetime | not null | ISO 8601 |
 
 The `webhook_events` table serves as an idempotency log and audit trail. The `delivery_id` unique constraint prevents duplicate processing when GitHub retries delivery. `status` is an open enum — consumers must handle unknown values gracefully by treating them as informational without breaking. New enum values are additive only; no existing value is removed without a major API version bump and at least one release cycle of deprecation notice.
+
+**Event retention:** Webhook event rows are retained for 90 days (configurable via `EVENTS_RETENTION_DAYS` environment variable). A background cleanup task runs daily at midnight (server time) and deletes rows where `created_at` is older than the retention window. This prevents unbounded growth of the `webhook_events` table while keeping the audit trail accessible for a full quarter. Admin API queries that include a `created_at` filter are scoped by the database query (no additional filtering needed).
+
+### Indexes
+
+The following indexes are created at schema initialization to ensure lookup performance (NFR-03, NFR-04):
+
+| Index | On | Columns | Purpose |
+|---|---|---|---|
+| idx_repositories_owner_repo | repositories | (owner, repo) | Lookup repository by webhook event owner/repo |
+| idx_sessions_repo_subject | sessions | (repo_id, subject_type, subject_id) | Restore session on webhook event |
+| idx_sessions_updated_at | sessions | (updated_at) | Session expiry reaper query |
+| idx_webhook_events_delivery_id | webhook_events | (delivery_id) | Idempotency dedup lookup |
+| idx_webhook_events_created_at | webhook_events | (created_at) | Event retention cleanup and admin API queries |
+| idx_webhook_events_repo_id_status | webhook_events | (repo_id, status) | Admin API event listing by repo/status |
 
 ## API Contracts
 
@@ -157,8 +180,11 @@ Arbitrary JSON payload from GitHub. The server does not validate the payload sch
 
 ```json
 {
-  "status": "rejected",
-  "reason": "invalid_signature"
+  "status": "error",
+  "error": {
+    "code": "INVALID_SIGNATURE",
+    "message": "HMAC signature verification failed"
+  }
 }
 ```
 
@@ -173,7 +199,7 @@ Arbitrary JSON payload from GitHub. The server does not validate the payload sch
 }
 ```
 
-Returned when the same `X-GitHub-Delivery` was already processed. This is not an error — it is the expected outcome of GitHub's at-least-once delivery guarantee.
+Returned when the same `X-GitHub-Delivery` was already processed. The `event_id` refers to the existing `webhook_events` row created during the first delivery — no new row is inserted. This is not an error; it is the expected outcome of GitHub's at-least-once delivery guarantee.
 
 **Error Responses**
 
@@ -208,7 +234,7 @@ Returns server health status.
 ```json
 {
   "status": "healthy",
-  "version": "1.0.0",
+  "api_version": "v1",
   "uptime_seconds": 3600,
   "active_repositories": 5,
   "active_sessions": 12,
@@ -220,7 +246,7 @@ Returns server health status.
 | Field | Type | Description |
 |---|---|---|
 | status | string | "healthy" or "unhealthy" |
-| version | string | Server software version |
+| api_version | string | API contract version (e.g., "v1") |
 | uptime_seconds | integer | Seconds since process start |
 | active_repositories | integer | Count of registered repos with `active=true` |
 | active_sessions | integer | Count of non-expired sessions |
@@ -237,7 +263,9 @@ All `/admin/*` endpoints require authentication via an `Authorization` header. T
 Authorization: Bearer <admin-token>
 ```
 
-Requests without a valid token receive HTTP 401 with code `UNAUTHORIZED`. Token rotation is performed by restarting the server with a new `ADMIN_TOKEN` value.
+Requests without a valid token receive HTTP 401 with code `UNAUTHORIZED`.
+
+**Token rotation:** To rotate the admin token without disrupting active admin clients, the server also accepts `ADMIN_TOKEN_OLD` during the transition window. When `ADMIN_TOKEN_OLD` is set, both the old and new tokens are accepted for authentication. Operators can restart with both variables set, wait for all clients to be updated, then remove `ADMIN_TOKEN_OLD` on a subsequent restart. If `ADMIN_TOKEN_OLD` is not provided, only `ADMIN_TOKEN` is accepted (normal operation).
 
 ### POST /admin/repositories (optional, FR-09)
 
@@ -557,20 +585,23 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 | Webhook idempotency | Dedup via `X-GitHub-Delivery` unique constraint | SQLite unique constraint on `delivery_id`. Duplicates get HTTP 409 with `reason: duplicate_delivery`. At-most-once agent execution per delivery. |
 | Graceful shutdown | Uvicorn lifespan handler + `asyncio.Event` + task tracking | Set shutdown flag, reject new requests with 503, drain in-flight tasks (max 30s), cancel stragglers, exit. |
 | Structured logging | `structlog` with JSON output | Server emits structured events for webhook receipt, HMAC result, rule matches, agent execution, gh calls, retries, and errors. CLI path unchanged (plain-text). |
-| Rate limiting | In-memory token bucket (10 req/s per IP, burst 20) | Protects against webhook storms and accidental misconfiguration. Token bucket is stateless and resets on server restart. Health checks are exempt. Rate-limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) are returned in all 429 responses. |
-| Skill file distribution | Clone agent repository at container startup | Simplest approach. The `AGENTS_REPOSITORY` is cloned on first webhook event or at startup. Cold-start latency is acceptable vs. rebuild on every skill change. Can be overridden via Docker volume mount. |
-| API versioning | URL prefix-based (`/v1/webhook`, `/v1/admin/repositories`). Additive-only within a major version. Breaking changes require a new major version with a documented deprecation window. | All endpoints are versioned via URL prefix. Future major versions (e.g., `/v2/webhook`) may change behavior. The current `/webhook`, `/health`, and `/admin/*` paths are aliases for `/v1/*`. The version in the health response (`version` field) is the API version, not the server build. Deprecation window: at least one minor release cycle between announcement and removal of a deprecated version. New optional fields can be added at any minor version without a deprecation period. |
-| Forward compatibility | Open enums, unknown field tolerance, additive-only contract | All schemas document that consumers must ignore unknown fields. Enum values that are not recognized must be handled without error. New fields are always optional. API version is the `version` field in health response and `repositories.version` for canary. New enum values are additive only; no existing enum value is removed without a major version bump and a deprecation window of at least one release cycle. |
+| Rate limiting | In-memory token bucket (10 req/s per IP, burst 20) | Protects against webhook storms and accidental misconfiguration. Token bucket is per-IP and resets on server restart. Health checks are exempt. Rate-limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) are returned in all 429 responses. The `X-RateLimit-Reset` value is an absolute Unix timestamp computed relative to the current token bucket refill window — after a restart, the timestamp represents the new window and consumers must not carry over a pre-restart `X-RateLimit-Reset` value. Rate-limit thresholds are configurable via `RATE_LIMIT_REQUESTS_PER_SEC` (default 10) and `RATE_LIMIT_BURST` (default 20) environment variables. |
+| Skill file distribution | Clone agent repository at container startup | The `AGENTS_REPOSITORY` is cloned during the startup lifecycle phase, before the health endpoint reports healthy and before any webhooks are accepted. This ensures consistent latency: the first webhook never bears a cold-start clone. Cloning blocks readiness, which is acceptable because startup is a rare event. The clone path can be overridden via a Docker volume mount for production deployments that pre-distribute skills. |
+| API versioning | URL prefix-based (`/v1/webhook`, `/v1/admin/repositories`). Additive-only within a major version. Breaking changes require a new major version with a documented deprecation window. | All endpoints are versioned via URL prefix. Future major versions (e.g., `/v2/webhook`) may change behavior. The current `/webhook`, `/health`, and `/admin/*` paths are aliases for `/v1/*`. The health response exposes `api_version` (the API contract version, e.g., `"v1"`). Deprecation window: at least one minor release cycle between announcement and removal of a deprecated version. New optional fields can be added at any minor version without a deprecation period. |
+| Forward compatibility | Open enums, unknown field tolerance, additive-only contract | All schemas document that consumers must ignore unknown fields. Enum values that are not recognized must be handled without error. New fields are always optional. API version is the `api_version` field in the health response and `repositories.version` for canary deployments. New enum values are additive only; no existing enum value is removed without a major version bump and a deprecation window of at least one release cycle. |
 
 ## Risks and Unknowns
 
 1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: a per-session `asyncio.Lock` serializes writes within each session (keyed by `(repo_id, subject_type, subject_id)`). This allows concurrent writes across different sessions while preventing write interleaving within a single session's conversation history. Escalation path: migration to PostgreSQL (schema-compatible change).
 2. **Thread pool exhaustion**: If all 20 thread pool workers are occupied by long-running agent executions, new webhooks queue up and risk violating NFR-03 (5s dispatch). Mitigation: monitor pool queue depth; alert at 80% utilization. The bounded pool prevents OOM but may delay dispatch.
 3. **`opencode` CLI version drift**: The Docker image pins an `opencode` version. If the agent CLI evolves, the server image must be rebuilt. Mitigation: make `opencode` version a build arg in the Dockerfile.
-4. **Skill file distribution**: Cloning the agent repository at startup may fail or time out. Mitigation: retry with backoff; fall back to a cached clone if available; document that a volume mount is the production-reliable approach.
+4. **Skill file distribution**: Cloning the agent repository at startup may fail or time out, blocking the server from becoming healthy. Mitigation: retry with backoff; fall back to a cached clone if available (from a prior startup); document that a volume mount is the production-reliable approach.
 5. **Behavioral identity verification**: The refactored pipeline must produce identical outcomes for the same input as the CLI path. Mitigation: run the acceptance criteria suite against both paths in CI before deploying the server.
 6. **GitHub API rate limits**: All outbound GitHub API calls share the per-repository token. Rate limit exhaustion blocks agent outcomes. Mitigation: retry with backoff (NFR-06); log rate-limit headers for monitoring.
 7. **No TLS termination in the server**: The server listens on HTTP only. TLS termination is expected to be handled by a reverse proxy (nginx, Caddy, or a cloud load balancer) deployed in front of the container. **Deployment guidance**: the reverse proxy must support HTTP/1.1 (for GitHub webhook delivery) and should be configured with a TLS certificate from Let's Encrypt or a commercial CA. Health checks from the load balancer should target `GET /health` on the HTTP port. The server exposes `PORT` (default 8080) as the listen address.
+8. **Session table unbounded growth**: Without a reaper, the `sessions` table grows indefinitely. Mitigation: background reaper deletes sessions older than `SESSION_TTL_HOURS` (default 168, i.e., 7 days). The reaper runs every hour and logs its deletion count.
+9. **Webhook events table unbounded growth**: Without a retention policy, the `webhook_events` table grows indefinitely. Mitigation: daily cleanup task deletes rows older than `EVENTS_RETENTION_DAYS` (default 90). Both retention and reaper tasks use SQL with LIMIT to avoid long-running transactions.
+10. **Admin token rotation disruption**: Restarting with a new `ADMIN_TOKEN` invalidates all existing admin sessions at once. Mitigation: support `ADMIN_TOKEN_OLD` for a transition window, giving operators time to update clients.
 
 ## Out of Scope
 
@@ -580,4 +611,4 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 - **Admin dashboard UI**: FR-09 specifies a REST API only. No web UI is specified.
 - **Metrics export**: No Prometheus, OpenTelemetry, or statsd export is specified. Structured logs are the observability channel.
 - **Webhook secret rotation**: The initial specification does not include a dedicated rotation endpoint. Operators update the `secret_token` field via `PATCH /admin/repositories/{owner}/{repo}` (which accepts an optional `secret_token` field to replace the existing value) or by direct SQLite update. A future version may add a rotation schedule and expiry tracking.
-- **Database migrations**: The initial schema is created at server startup via `CREATE TABLE IF NOT EXISTS`. No migration framework is specified. Schema changes are applied manually or via a migration script.
+- **Database migrations**: The initial schema is created at server startup via `CREATE TABLE IF NOT EXISTS`. No migration framework is specified. The `db/` directory will contain numbered migration SQL files (e.g., `001_initial.sql`, `002_add_session_expiry.sql`) that are applied in order on startup. Schema rollback is manual (restore from backup or apply a reverse migration file). This convention is established from day one even though initial migrations are trivial, ensuring a migration path exists before schema changes accumulate.
