@@ -2,6 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
+revision: 1
 ---
 
 # Feasibility Assessment: Client/Server architecture
@@ -16,10 +17,12 @@ Replace the GitHub Actions execution model with a hosted HTTP server that receiv
 |---|---|
 | Required technologies | Available in-house (Python, GitHub API, stdlib hmac) + New (FastAPI, Uvicorn, aiosqlite, Docker) |
 | Integration complexity | Medium |
-| Technical risks | Skill file distribution strategy unresolved; concurrent multi-repo env var racing resolved via parameter injection; retry logic must not mask permanent failures |
+| Technical risks | Skill file distribution strategy unresolved; concurrent multi-repo env var racing resolved via parameter injection; retry logic must not mask permanent failures; incorrect HMAC implementation could allow unauthorized webhook requests; GitHub at-least-once webhook delivery requires idempotency handling (dedup via `X-GitHub-Delivery` header); SQLite serializes writes — concurrent write contention under 10-repo load (NFR-04); `run_in_executor` threading assumes GIL contention and thread pool exhaustion are acceptable under NFR-04 load |
 | Existing components to reuse | `engine.py` (reuse as-is), `cli.py` (reuse as-is), `sync_labels.py` (reuse as-is), refactored `route.py`/`run_rule.py`/`run_steps.py`/`apply_outcome.py` with backward-compatible wrappers |
 
-The core engine (`engine.py`) is pure functions with no I/O side effects — reuse as-is. The pipeline entry points need mechanical refactoring (extract logic into parameterized functions, keep CLI wrappers). The new server components (FastAPI routes, HMAC verification, SQLite session store) are standard patterns with zero licensing risk. Two open questions remain: how skill files are distributed in the Docker image (cloned at start, mounted, or fetched on first use), and whether the server needs a `FORCE_RULE_ID` bypass. Neither is blocking — the first has multiple viable approaches, the second is trivially addable.
+The core engine (`engine.py`) is pure functions with no I/O side effects — reuse as-is. The pipeline entry points need mechanical refactoring (extract logic into parameterized functions, keep CLI wrappers). The new server components (FastAPI routes, HMAC verification, SQLite session store) are standard patterns with zero licensing risk. HMAC verification must follow GitHub's reference implementation using `hmac.compare_digest` for timing-safe comparison; any deviation is a security risk and must be caught in code review. Webhook idempotency must be handled via `X-GitHub-Delivery` header deduplication. SQLite concurrent write contention under NFR-04 load requires a lightweight lock or queue (e.g., `asyncio.Lock` per repo); migration to PostgreSQL is the escalation path if contention becomes blocking. Thread pool sizing must account for GIL-bound pipeline steps — the server should use a bounded thread pool (e.g., `ThreadPoolExecutor(max_workers=20)`) to prevent exhaustion under NFR-04's 10 concurrent repos.
+
+Two open questions remain: how skill files are distributed in the Docker image (cloned at start, mounted, or fetched on first use), and whether the server needs a `FORCE_RULE_ID` bypass. Neither is blocking — the first has multiple viable approaches, the second is trivially addable.
 
 **Verdict:** Feasible
 
@@ -34,7 +37,9 @@ The core engine (`engine.py`) is pure functions with no I/O side effects — reu
 
 The effort is L because the refactoring touches four modules with behavioral-identity constraints, the server requires greenfield development across six sub-components (webhook receiver, session store, registration store, pipeline bridge, admin API, Dockerfile), and the retry and env var isolation changes must be validated against the full acceptance criteria suite. Infrastructure costs are negligible (a single VM). Third-party costs are zero. The ROI hinges on whether the unlocked capabilities (persistent state, centralized mgmt) justify the upfront engineering cost at this project stage.
 
-**Verdict:** Feasible with conditions
+**Conditions:** None — no financial barriers.
+
+**Verdict:** Feasible
 
 ## Operational Feasibility
 
@@ -47,6 +52,8 @@ The effort is L because the refactoring touches four modules with behavioral-ide
 
 The primary operational risk is solo-maintainer bandwidth: the feature requires weeks of focused work across the full stack (refactoring, new async code, Docker, testing) while keeping the existing path working. The async skill gap can be mitigated by keeping the server's async surface minimal (webhook receiver only, pipeline dispatched via `run_in_executor`). The maintenance burden is real but low in absolute terms for a single-container deployment.
 
+**Conditions:** The implementer must produce an operational runbook covering restart, log rotation, crash recovery, TLS termination, volume backup, and rollback before the server is deployed to production. The preserved CLI path provides implicit rollback: if the server model proves unsustainable, repos revert to the GitHub Actions workflow path with no code changes.
+
 **Verdict:** Feasible with conditions
 
 ## Go/No-Go Decision
@@ -57,9 +64,10 @@ The primary operational risk is solo-maintainer bandwidth: the feature requires 
 
 - The async skill gap must be addressed before implementation begins: either the implementer has production FastAPI experience, or the refactoring plan explicitly minimizes async surface area (sync pipeline wrapped via `run_in_executor`).
 - Skill file distribution strategy for the Docker image must be decided before server implementation (options: clone at startup, mount as volume, fetch on first use).
-- The maintainer must accept the ongoing operational burden of a hosted server (Docker image, log rotation, crash recovery) in addition to the existing GitHub Actions path.
+- An operational runbook covering restart, log rotation, crash recovery, TLS termination, volume backup, and rollback must be drafted before the server is deployed to production.
 
 ## Open Questions
 
 1. Should the server distribute skill files by cloning the agent repository at container startup (simplest, cold-start latency) or by bundling them in the Docker image (faster startup, rebuild on skill change)?
 2. Does the maintainer have the bandwidth for an L-size feature at this project stage (v0.1.0, no validated user demand for a server model)?
+3. Should SQLite concurrent write contention be mitigated with per-repo `asyncio.Lock` or with a migration path to PostgreSQL as an escape hatch?
