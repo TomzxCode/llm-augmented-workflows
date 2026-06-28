@@ -92,9 +92,22 @@ def _continue_for_outcome(agent: dict, on_outcome: dict) -> None:
     verdicts = sorted((on_outcome.get("cases") or {}).keys())
     hint = f" (one of: {', '.join(verdicts)})" if verdicts else ""
     prompt = (
-        f"Your outcome file is missing or incomplete. Write YAML to {path} now "
-        f"with a `verdict` key{hint}, e.g. `verdict: approved`, and a `reason` "
-        f"key with context-specific feedback to post on the issue. Both are required."
+        f"Your outcome file at {path} is missing or incomplete. Write YAML to "
+        f"{path} now using EXACTLY this format, nothing else:\n"
+        f"\n"
+        f"```\n"
+        f'verdict: "value-here"\n'
+        f"reason: |\n"
+        f"  reason-here\n"
+        f"```\n"
+        f"\n"
+        f"Rules:\n"
+        f"- `verdict` must be a single unindented line holding a quoted string"
+        f"{hint}.\n"
+        f"- `reason` must use the literal block scalar `|` marker, followed by "
+        f"one or more indented lines of context-specific feedback to post on "
+        f"the issue.\n"
+        f"- Both keys are required. Do not add any other keys, comments, or text."
     )
     cmd = [
         "opencode",
