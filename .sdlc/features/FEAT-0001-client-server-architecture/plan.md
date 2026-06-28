@@ -2,6 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
+revision: 1
 ---
 
 # Implementation Plan: Client/Server architecture
@@ -36,7 +37,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 **Deliverables:**
 - [ ] FastAPI + Uvicorn application scaffold with lifespan handler
 - [ ] SQLite schema creation at startup (all tables, indexes, foreign keys with ON DELETE CASCADE)
-- [ ] Schema migration runner (`db/001_initial.sql`, `db/002_...`) — applied in order on startup
+- [ ] Schema migration runner (`db/001_initial.sql`, `db/002_...`) — applied in order on startup; each migration has a paired rollback file (`db/001_initial.down.sql`)
 - [ ] Version configuration loader (`/etc/llmaw/versions.yaml`) with fallback to `v1` on missing key
 - [ ] Skills repository clone at startup (`AGENTS_REPOSITORY`) with retry and cached fallback
 - [ ] Token re-encryption startup phase (AES-256-GCM + HKDF) with progress logging and timeout
@@ -106,7 +107,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 
 **Goal:** All components emit structured logs, counters, histograms, and traces. Operators can monitor webhook throughput, pipeline health, token refresh, and session lifecycle. Alerts fire on SLO violations.
 
-**Effort:** 4 person-days
+**Effort:** 7 person-days
 **Depends on:** Phase 3
 
 **Deliverables:**
@@ -138,7 +139,26 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 - [ ] Graceful shutdown test: in-flight tasks drain within 30s timeout, no dropped webhooks
 - [ ] Token refresh failure cascade test: 3 consecutive failures → repository disabled
 - [ ] Schema migration test: migration files apply in order; rollback by restore
+- [ ] Schema migration rollback test: each migration has a corresponding rollback tested in CI
 - [ ] Docker container build and smoke test
+
+### Phase 8: Deployment & Rollout
+
+**Goal:** The server is deployable to production with TLS termination, Docker registry distribution, and a staged rollout strategy. Existing CLI-driven repositories can migrate to the server deployment model.
+
+**Effort:** 5 person-days
+**Depends on:** Phase 7
+
+**Deliverables:**
+- [ ] Docker image published to registry (Docker Hub or ECR) with tagged versions and `latest` stable tag
+- [ ] Docker Compose reference deployment with reverse proxy (Caddy/nginx) for TLS termination
+- [ ] Staged rollout plan: 1 internal repo → 1 external repo → remaining repos, with rollback at each stage
+- [ ] Migration guide for existing CLI-drive repositories migrating to server
+- [ ] Schema rollback procedure: each migration file paired with a `NNNN_desc.down.sql` file; startup checks for missing rollback files and warns
+- [ ] Documented backup/restore procedure for SQLite database file (Docker volume snapshots, integrity check)
+- [ ] Production readiness checklist (monitoring stack deployed, alerts configured, runbooks published)
+- [ ] Deployment runbook covering initial setup, restart, key rotation, and disaster recovery
+- [ ] Release validation buffer: 1 week of integration/certification after Phase 7 before production rollout
 
 ## Milestones
 
@@ -151,6 +171,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 | M5: Token lifecycle managed | Phase 5 | Token encrypted at rest, background refresh for installation tokens, reaper cleans stale sessions and events |
 | M6: Production observability | Phase 6 | All structured log events and metrics firing, dashboard populated, alert rules active |
 | M7: Verified under load | Phase 7 | Load test at max concurrency passes SLOs, behavioral identity verified, all regression tests pass |
+| M8: Production ready | Phase 8 | Container published to registry, TLS termination tested, staged rollout executed for at least one repo, migration guide published, runbooks reviewed |
 
 ## Dependencies
 
@@ -161,6 +182,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 | Prometheus / OpenTelemetry infrastructure | External | Ops team | Metrics and alerts (Phase 6) degraded to log-based only. Recovery: deploy Prometheus sidecar or hosted metrics service after initial release |
 | GitHub API token scopes | External | Repo admin | If tokens lack required scopes, pipeline outbound calls fail. Mitigation: document required scopes clearly in registration API |
 | `opencode` CLI version compatibility | External | Server team | Docker image pins specific version; must rebuild on CLI updates. Mitigation: version as Docker build arg |
+| Docker image registry (Docker Hub, ECR, GCR) | External | Ops team | Without a registry the container cannot be distributed. Mitigation: support `docker load` from a release tarball as fallback for air-gapped deploys |
 
 ## Risk Register
 
@@ -174,6 +196,11 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 | GitHub API rate limit exhaustion per token | Med | Med | Retry with backoff; log rate-limit headers; monitor via metric. |
 | `versions.yaml` misconfiguration prevents server startup | Low | High | Validate at CI/build time; log clear error on parse failure. Server exits on invalid file. |
 | Token re-encryption timeout at startup (large number of existing tokens) | Low | Low | Configurable timeout; partial re-encryption with remaining rows handled by `llmaw-admin reencrypt-tokens`. |
+| Token encryption key (`TOKEN_ENCRYPTION_KEY`) lost | Low | High | All encrypted tokens become undecryptable. Mitigation: back up key to secrets manager (1Password, Vault); document key rotation runbook. |
+| Token encryption key (`TOKEN_ENCRYPTION_KEY`) compromised | Low | High | Attacker can decrypt all stored GitHub tokens. Mitigation: key rotation via `TOKEN_ENCRYPTION_KEY_OLD` transition; emergency re-encrypt batch with new key; audit log of key changes. |
+| SQLite database corruption (filesystem error, power loss, Docker volume issue) | Low | High | Irrecoverable loss of session state, repository registrations, and webhook audit log. Mitigation: WAL mode (planned), periodic integrity checks (`PRAGMA integrity_check`), documented Docker volume backup/restore procedure, RTO <5 min from backup. |
+| Token re-encryption is one-way if old key is discarded | Low | Med | Re-encrypting with a new key is irreversible unless old key is retained. Mitigation: retain `TOKEN_ENCRYPTION_KEY_OLD` for one full rotation cycle; verify all tokens decrypt with new key before discarding old key. Flagged as one-way-door in deployment runbook. |
+| DELETE /admin/repositories cascade deletes sessions and events without warning | Low | Med | Operator may accidentally lose all session history for a repository. Mitigation: add confirmation step in API (require `confirm=true` query param); log at WARN with full context before executing. |
 
 ## Timeline (estimated for 2-person team)
 
@@ -184,5 +211,7 @@ Replace GitHub Actions as the execution substrate with a hosted HTTP server (Fas
 | Phase 3: Webhook Pipeline | Week 3 | Week 4 | 6 person-days, depends on Phase 2 |
 | Phase 4: Admin API | Week 4 | Week 5 | 4 person-days, depends on Phase 2 (parallel with Phase 3 possible) |
 | Phase 5: Token & Background Tasks | Week 5 | Week 6 | 4 person-days, depends on Phase 2 (parallel with Phases 3-4 possible) |
-| Phase 6: Observability | Week 6 | Week 7 | 4 person-days, depends on Phase 3 |
-| Phase 7: Testing & Hardening | Week 7 | Week 8 | 5 person-days, depends on Phases 3-5 |
+| Phase 6: Observability | Week 6 | Week 7 | 7 person-days, depends on Phase 3 |
+| Phase 7: Testing & Hardening | Week 7 | Week 9 | 5 person-days, depends on Phases 3-5 |
+| Phase 8: Deployment & Rollout | Week 9 | Week 10 | 5 person-days, depends on Phase 7 |
+| Release validation buffer | Week 10 | Week 11 | No active development; integration/certification, release approval, deployment |
