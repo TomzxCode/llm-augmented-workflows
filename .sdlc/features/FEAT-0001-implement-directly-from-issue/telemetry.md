@@ -2,7 +2,7 @@
 issue: "#17"
 title: "Implement directly from issue"
 status: in-review
-revision: 1
+revision: 2
 ---
 
 # Telemetry: Implement directly from issue
@@ -26,9 +26,9 @@ This feature adds an express path that routes eligible issues directly from tria
 
 | Step | Event | Entry Criteria | Exit Criteria |
 |---|---|---|---|
-| 1. Issue filed | `issue_opened` | Issue is created in the repository | Triage workflow fires |
+| 1. Issue filed | `issues:opened` (GitHub native webhook event, not a custom analytics event) | Issue is created in the repository | Triage workflow fires |
 | 2. Issue classified | `issue_classified` | Triage-issue skill runs | Verdict + complexity emitted to outcome YAML |
-| 3. Express eligibility determined | `express_eligibility_set` | Triage verdict = feature + complexity = low + config criteria met | Label `llmaw:express-eligible` applied (or `llmaw:feature-request` for full pipeline) |
+| 3. Routing decision made | `routing_decision_made` | Triage verdict + complexity emitted | Label `llmaw:express-eligible` (express path) or `llmaw:feature-request` (full pipeline) applied |
 | 4. Implementation started | `implementation_started` | `create-implementation` agent step invoked | Agent produces code changes or errors |
 | 5. PR created (success) | `implementation_completed` | `create-implementation` succeeds | PR posted + `llmaw:express-done` label set |
 | 5a. Implementation failed | `implementation_failed` | `create-implementation` encounters error | `llmaw:express-failed` label set + error comment posted |
@@ -68,16 +68,17 @@ This feature adds an express path that routes eligible issues directly from tria
 | route | string | Yes | `express` or `full_pipeline` |
 | source | string | Yes | `server` |
 
-### express_eligibility_set
+### routing_decision_made
 
 **Trigger:** Triage flow `on_outcome` applies `llmaw:express-eligible` or `llmaw:feature-request` label
 **Location:** `flows.yml` on_outcome handler (deterministic shell/labels step)
 
 | Property | Type | Required | Description |
-|---|---|---|---|
+|---|---|---|---|---|
 | issue_number | number | Yes | GitHub issue number |
-| label_applied | string | Yes | `llmaw:express-eligible` or `llmaw:feature-request` |
+| label_applied | string | Yes | `llmaw:express-eligible` or `llmaw:feature-request`; when `llmaw:feature-request`, indicates full pipeline routing |
 | complexity | string | No | Emitted complexity from classification |
+| routing_reason | string | No | Why the issue was routed to full pipeline (e.g., `complexity_high`, `exclusion_label`, `body_too_long`); present only when `label_applied` is `llmaw:feature-request` |
 | source | string | Yes | `server` |
 
 ### implementation_started
@@ -133,10 +134,12 @@ This feature adds an express path that routes eligible issues directly from tria
 | Property | Type | Required | Description |
 |---|---|---|---|
 | issue_number | number | No | GitHub issue number if available at the failure point |
-| step_name | string | Yes | `triage-issue`, `apply-label`, `dispatch-express`, `create-implementation` |
+| step_name | string | Yes | `triage-issue`, `apply-label`, `dispatch-express` (NOT `create-implementation`; use `implementation_failed` for that step) |
 | error_type | string | Yes | `skill_crash`, `label_apply_failed`, `workflow_dispatch_error`, `missing_outcome`, `timeout` |
 | error_message | string | No | Free-text error detail from workflow logs |
 | source | string | Yes | `server` |
+
+**Note:** `workflow_step_failed` covers infrastructure failures (skill crash, label apply failure, workflow dispatch error, missing outcome YAML, timeout). For the `create-implementation` step specifically, use the `implementation_failed` event which captures domain-level failures (skill returning `verdict: failed`) with token and duration properties.
 
 ### express_override_used
 
@@ -159,18 +162,6 @@ This feature adds an express path that routes eligible issues directly from tria
 | issue_number | number | Yes | GitHub issue number |
 | label_removed | string | Yes | `llmaw:express-eligible` or `llmaw:quick-implement` |
 | previous_labels | string[] | Yes | Labels remaining on the issue after removal |
-| source | string | Yes | `server` |
-
-### full_pipeline_triggered
-
-**Trigger:** Issue is classified as ineligible for express path and routed to full pipeline
-**Location:** Triage flow `on_outcome` handler
-
-| Property | Type | Required | Description |
-|---|---|---|---|
-| issue_number | number | Yes | GitHub issue number |
-| reason | string | Yes | Why the issue was routed to full pipeline (e.g., `complexity_high`, `exclusion_label`, `body_too_long`) |
-| complexity | string | No | Emitted complexity value |
 | source | string | Yes | `server` |
 
 ## Counter Metrics
