@@ -4,45 +4,46 @@ verdict: changes-requested
 reviewed_at: 2026-06-28
 ---
 
-# Specification Review: Client/Server architecture (revision 2)
+# Specification Review: Client/Server architecture (revision 3)
 
 ## Ambiguities
 
-1. **Unhandled event type behavior**: The spec defines FR-01 for "push, pull_request, issue_comment, issues" events but the POST /webhook endpoint does not specify what happens when an unsupported event type (e.g., `star`, `member`, `fork`) is received. Does the server accept it with 200 and tag it as `status: skipped`, or reject with 400? Without this, the behavior for a majority of GitHub event types is undefined.
+1. **Session expiry detection at load time**: The spec states that expired sessions are handled by a background reaper and that "when a new webhook event arrives for an expired session, the server creates a fresh session instead of loading the stale one" (line 111). However, it does not specify how the server determines a session is expired at load time before the reaper deletes it. The reaper runs hourly; between runs, expired rows still exist. The server needs an explicit `updated_at` vs. `SESSION_TTL_HOURS` check on every session load. The current language conflates reaper-based deletion with load-time expiry detection, which are separate concerns.
 
 ## Inconsistencies
 
-1. **POST/PATCH /admin/repositories response omits `version` and `created_at`**: The 201 response returns `id`, `owner`, `repo`, `active` but not `version` (which is accepted in the request) or `created_at`. The GET /admin/repositories response includes both `version` and `created_at`. The PATCH response similarly omits `version`. The response shapes should be consistent or the divergence explicitly justified.
+1. **Duplicate delivery HTTP status in Technical Decisions vs. API contract**: The Technical Decisions table (line 632) states "Duplicates get HTTP 409" but the API contract (line 244) returns HTTP 200 with `status: "skipped"`. The response shape does include a `reason` field on the 200 response, but the 409 claim in the Technical Decisions is stale and directly contradicts the API contract.
 
-2. **Event ID field naming across endpoints**: `POST /webhook` returns `event_id` but `GET /admin/events` returns `id` for the same logical value. This is a minor naming inconsistency that API consumers must handle differently per endpoint.
+2. **Token encryption mode detection**: Line 87 says "If `TOKEN_ENCRYPTION_KEY_OLD` is not provided, a normal startup proceeds (existing tokens are decrypted with `TOKEN_ENCRYPTION_KEY`)." Line 91 says "To decrypt (returning to development mode), set `TOKEN_ENCRYPTION_KEY` to the current key and `TOKEN_ENCRYPTION_KEY_OLD` to empty — the server decrypts all tokens to plaintext." Both conditions (`TOKEN_ENCRYPTION_KEY_OLD` absent/empty) describe the same inputs but dictate different behaviors (normal decryption vs. plaintext migration). The spec must define how the server distinguishes these two modes, for example by reserving the empty-string value for the decrypt-to-plaintext path and treating a missing env var as normal startup.
 
 ## Incoherences
 
-1. **409 "not an error" with conflict status**: The 409 duplicate delivery response is described as "not an error; it is the expected outcome of GitHub's at-least-once delivery guarantee." Yet it uses HTTP 409 (Conflict), conventionally an error status. The body uses `"status": "skipped"` rather than the uniform `"status": "error"` envelope, diverging from all other error responses. If this is truly not an error, HTTP 200 with `status: "skipped"` would be more consistent.
+1. **Admin API optionality vs. dependency**: All admin endpoints are labeled "optional (FR-09)" in their headings, yet they are the only documented mechanism for repository registration. The "Out of Scope" section (line 655) suggests "manual registration via the admin API or direct SQLite insert" as alternatives. If the admin API is optional and direct SQL inserts are the fallback, the spec should either (a) mandate a minimal registration endpoint as Must (not May), or (b) provide a documented SQL script and configuration workflow as the primary path, making the REST API a convenience layer. The current framing implies the API can be omitted, which would leave first-time deployers with no documented registration workflow.
 
 ## Missing Information
 
-1. **Unsupported event type handling**: (Related to Ambiguities #1.) No requirement or acceptance criterion covers how the server behaves for event types it does not handle. The spec should document the behavior (e.g., return 200 with `status: "skipped"` and insert a webhook_events row, or reject with 400).
+1. **Deregistration cascade behavior**: `DELETE /admin/repositories/{owner}/{repo}` does not specify whether deleting a repository cascades to its `sessions` and `webhook_events` rows, or orphans them. If sessions are orphaned, the session reaper will eventually clean them up (via `repo_id` FK — though FK behavior is not specified either). If FK cascading is intended, the schema must declare it. This affects both data integrity and the reaper's query logic.
 
-2. **`versions.yaml` schema undefined**: The spec relies on a YAML file at `/etc/llmaw/versions.yaml` to define available agent configuration bundles for canary deployments (FR-10), but the schema of this file is not specified. Implementors cannot act on this without the expected structure. This blocks FR-10 implementation.
+2. **Session initial status on insert**: The sequence diagram (lines 531-537) inserts a `webhook_events` row before returning HTTP 200, but does not specify the initial `status` value. The `status` enum includes "received", "processing", "completed", "failed", "skipped". The row should start as "received" or "processing", but this is not documented.
+
+3. **GitHub token scopes**: The `gh_token` field is described as a "GitHub installation token or PAT for outbound API calls" but no required scopes or permissions are listed. Implementors need to know which scopes the token must have (e.g., `issues:write`, `pull_requests:write`, `contents:write`).
+
+4. **Thread pool size not configurable**: The maximum of 20 workers is hardcoded in the description (line 629). Making this configurable via an environment variable would support deployments with different concurrency requirements (e.g., 5 repos vs. 50 repos).
+
+5. **Admin token strength requirement**: No minimum length or character requirements are specified for `ADMIN_TOKEN`. A weak token is a security risk for the admin API.
 
 ## Implementability
 
-1. **Bulk token re-encryption at startup**: The key rotation procedure reads every token from the database, decrypts with `TOKEN_ENCRYPTION_KEY_OLD`, and re-encrypts with `TOKEN_ENCRYPTION_KEY` at startup. For deployments with many repositories, this could significantly delay server readiness. No progress logging, timeout, or deferral mechanism is specified. Consider adding a startup timeout, batched processing with progress logging, or a separate maintenance command.
+1. **`asyncio.Lock` not thread-safe across `run_in_executor`**: Line 642 proposes "a per-session `asyncio.Lock` serializes writes within each session." However, dispatch to the agent pipeline uses `run_in_executor` (thread pool, line 629), which runs code in a separate thread. `asyncio.Lock` is not thread-safe and must only be used from within the same event loop thread. Using it across threads would cause undefined behavior. This should be `threading.Lock` or, if the SQLite writes remain in the async path, the lock must be acquired before dispatching to the thread pool and released only after the async write completes.
+
+2. **Token encryption state machine complexity**: The three-way startup logic (normal startup with `TOKEN_ENCRYPTION_KEY`, key rotation with `TOKEN_ENCRYPTION_KEY` + `TOKEN_ENCRYPTION_KEY_OLD`, decrypt-to-plaintext with empty `TOKEN_ENCRYPTION_KEY_OLD`) introduces a non-trivial state machine. This is testable but error-prone. Consider simplifying: split the decrypt-to-plaintext path into a separate one-shot maintenance command (like `llmaw-admin reencrypt-tokens` already handles re-encryption) rather than wiring it into the startup branch detection.
 
 ## Reversibility
 
-No issues found. All previously identified issues have been addressed:
-- Encryption/decryption migration is now bidirectional.
-- Schema migration convention (numbered SQL files + manual rollback) is documented.
-- CLI path preservation remains in place.
-- Canary routing (`version` field) is trivially reversible.
+1. **Session data compatibility across version switches**: If a repository's `version` is changed from `v2-canary` back to `v1`, existing session data (conversation_history, context) may contain fields or formats produced by the v2-canary configuration. The spec does not address whether the `v1` config bundle tolerates v2-structured JSON, or whether sessions should be reset on version change. This is a one-way-door concern: a version rollback could corrupt in-flight sessions.
+
+2. **Encryption-to-plaintext path**: The spec includes a documented path back to plaintext for development/disaster recovery (line 91). While scoped to development, this creates a latent risk: an operator could accidentally trigger plaintext migration in a production environment. Consider removing the startup-based decrypt path entirely and offering a separate offline tool instead.
 
 ## Forward Compatibility
 
-No issues found. The spec is thorough:
-- Unknown field tolerance is documented across all endpoints and data models.
-- Open enums with additive-only guarantees for `webhook_events.status`.
-- `metadata` JSON column provides a structured extension point.
-- URL-prefix API versioning with documented deprecation window.
-- Consumers instructed to handle unknown error codes as generic 5xx errors.
+1. **Version removal from `versions.yaml`**: The spec defines `versions.yaml` as the source of available config bundles but does not specify behavior when a version referenced by a `repositories.version` row is removed from the file. The server should define a fallback (e.g., fall back to `v1` defaults and log a warning) to avoid a crash loop for those repositories.
