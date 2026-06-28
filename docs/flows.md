@@ -63,6 +63,15 @@ All specified fields are ANDed. Omit a field to wildcard it.
 
 `target: linked-issue` parses `#N` (or `closes|fixes|resolves|plan for issue #N`) from the PR title/body and labels that issue. Add/remove are diffed against current labels, so they are idempotent.
 
+### `shell`
+
+```yaml
+- shell: examples/close-linked-issue.sh                                   # plain string
+- shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft requirements"]     # argv: script + args
+```
+
+The value is either a plain string (the script path) or a list whose first element is the script and the rest are positional arguments (`$1`, `$2`, ... inside the script). Use the list form to parameterize a shared script per phase, e.g. a phase-specific commit subject. Ambient context (`ISSUE_NUMBER`, `PR_TITLE`, ...) still arrives via the environment set by the dispatcher.
+
 ### `skill` / `prompt`
 
 ```yaml
@@ -104,6 +113,7 @@ Rules:
 
 - `on_outcome` must follow the agent step and reads `$OUTCOME_YAML` from the same run.
 - A missing/invalid outcome file yields `verdict: unknown`; only the `_` case (if any) applies.
+- If the skill writes no outcome, the engine resumes its opencode session once (`opencode run --continue`) and asks the model to write `$OUTCOME_YAML` before applying the fallback above. This only fires when `$OUTCOME_YAML` is set and the rule has an `on_outcome`.
 - At least one verdict case (besides `_`) is required.
 - Skills stay label-agnostic: they emit a domain verdict; the verdict-to-label mapping lives here.
 

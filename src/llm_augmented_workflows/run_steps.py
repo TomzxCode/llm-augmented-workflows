@@ -89,9 +89,15 @@ def apply_labels(step: dict) -> None:
 
 
 def run_shell(step: dict) -> None:
-    script = step["shell"]
-    log.info("running shell step: %s", script)
-    subprocess.run(["bash", script], check=True)
+    body = step["shell"]
+    if isinstance(body, str):
+        script, args = body, []
+    elif isinstance(body, dict):
+        script, args = body["run"], body.get("args") or []
+    else:
+        raise ValueError(f"invalid shell step body: {body!r}")
+    log.info("running shell step: %s %s", script, " ".join(args))
+    subprocess.run(["bash", script, *args], check=True)
 
 
 def main(phase: str = "pre") -> int:

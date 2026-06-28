@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import engine, run_steps
+from . import apply_outcome, engine, run_steps
 from .apply_outcome import apply
 from .engine import NEEDS_HUMAN_LABEL, ConfigError
 
@@ -79,6 +79,36 @@ def _run_agent(agent: dict) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _continue_for_outcome(agent: dict, on_outcome: dict) -> None:
+    """Resume the agent's opencode session and ask it to emit an outcome.
+
+    Runs when a rule expects an outcome but the skill wrote none, giving the
+    model one chance to produce ``$OUTCOME_YAML`` before apply_outcome falls
+    back to the default/notice path. ``--continue`` resumes the last session
+    in this working directory (the skill's own session).
+    """
+    path = os.environ["OUTCOME_YAML"]
+    verdicts = sorted((on_outcome.get("cases") or {}).keys())
+    hint = f" (one of: {', '.join(verdicts)})" if verdicts else ""
+    prompt = (
+        f"You did not write an outcome file. Write YAML to {path} now with a "
+        f"`verdict` key{hint}, e.g. `verdict: approved`."
+    )
+    cmd = [
+        "opencode",
+        "run",
+        "--continue",
+        "--model",
+        agent["model"],
+        "--dangerously-skip-permissions",
+        prompt,
+    ]
+    log.info("no outcome produced; continuing previous session to request one")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        log.warning("outcome continuation exited %s; falling back", result.returncode)
+
+
 def _execute_rule(rule: dict) -> None:
     rid = rule.get("id", "?")
     log.info("=== rule %s ===", rid)
@@ -92,6 +122,8 @@ def _execute_rule(rule: dict) -> None:
         if rule.get("has_post_deterministic"):
             _run_deterministic(rule.get("post_deterministic") or [])
         if rule.get("has_on_outcome") and rule.get("on_outcome"):
+            if os.environ.get("OUTCOME_YAML") and not apply_outcome.outcome_present():
+                _continue_for_outcome(rule["agent"], rule["on_outcome"])
             apply(rule["on_outcome"], rid)
 
 
@@ -111,9 +143,7 @@ def _run_continuous(seed_rules: list[dict]) -> int:
     if kind != "issue" or number is None:
         for rule in seed_rules:
             _execute_rule(rule)
-        log.info(
-            "continuous: subject is not an issue (%s); ran seed without looping", kind
-        )
+        log.info("continuous: subject is not an issue (%s); ran seed without looping", kind)
         return 0
 
     all_rules = _load_all_rules()

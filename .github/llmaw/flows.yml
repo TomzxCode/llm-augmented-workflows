@@ -207,7 +207,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-needs-assessment
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft needs assessment"]
           - on_outcome:
               approved:   { labels: { add: [llmaw:review-needs-assessment] } }
               rejected:   { close: true, comment: "Closing as wontfix." }
@@ -218,7 +218,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-needs-assessment
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review needs assessment"]
           - labels: { remove: [llmaw:review-needs-assessment] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:needs-approved] } }
@@ -232,7 +232,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-requirements
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft requirements"]
           - on_outcome:
               approved:   { labels: { add: [llmaw:review-requirements] } }
               needs-info: { comment: "Need clarification to draft requirements." }
@@ -242,7 +242,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-requirements
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review requirements"]
           - labels: { remove: [llmaw:review-requirements] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:requirements-approved] } }
@@ -255,7 +255,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-existing-solutions
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft existing-solutions survey"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-existing-solutions] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Existing-solutions survey produced no verdict; needs review." }
@@ -264,7 +264,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-existing-solutions
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review existing-solutions survey"]
           - labels: { remove: [llmaw:review-existing-solutions] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:solutions-approved] } }
@@ -277,7 +277,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-codebase-analysis
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft codebase analysis"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-codebase-analysis] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Codebase analysis produced no verdict; needs review." }
@@ -286,7 +286,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-codebase-analysis
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review codebase analysis"]
           - labels: { remove: [llmaw:review-codebase-analysis] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:analysis-approved] } }
@@ -299,7 +299,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-feasibility
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft feasibility assessment"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-feasibility] } }
               rejected: { close: true, comment: "Closing as not feasible." }
@@ -309,7 +309,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-feasibility
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review feasibility assessment"]
           - labels: { remove: [llmaw:review-feasibility] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:feasible] } }
@@ -323,7 +323,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-specifications
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft specification"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-specifications] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Specification produced no verdict; needs review." }
@@ -332,7 +332,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-specifications
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review specification"]
           - labels: { remove: [llmaw:review-specifications] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:spec-approved] } }
@@ -345,7 +345,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-telemetry
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft telemetry plan"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-telemetry] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Telemetry plan produced no verdict; needs review." }
@@ -354,7 +354,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-telemetry
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review telemetry plan"]
           - labels: { remove: [llmaw:review-telemetry] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:telemetry-approved] } }
@@ -367,7 +367,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-observability
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft observability plan"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-observability] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Observability plan produced no verdict; needs review." }
@@ -376,7 +376,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-observability
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review observability plan"]
           - labels: { remove: [llmaw:review-observability] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:observability-approved] } }
@@ -392,7 +392,7 @@ flows:
           # create-plan then publish-plan opens a draft plan/ PR. Its merge
           # (on-plan-merged) advances the flow, so approved is a no-op here.
           - skill: create-plan
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft plan"]
           - on_outcome:
               approved: {}
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Plan creation produced no PR; needs review." }
@@ -409,7 +409,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-tasks-decomposition
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft task decomposition"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-tasks-decomposition] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Task decomposition produced no verdict; needs review." }
@@ -418,7 +418,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-tasks-decomposition
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review task decomposition"]
           - labels: { remove: [llmaw:review-tasks-decomposition] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:tasks-approved] } }
@@ -431,7 +431,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-tests
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft test plan"]
           - on_outcome:
               approved: { labels: { add: [llmaw:review-tests] } }
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Test plan produced no verdict; needs review." }
@@ -440,7 +440,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: review-tests
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "review test plan"]
           - labels: { remove: [llmaw:review-tests] }
           - on_outcome:
               approved:          { labels: { add: [llmaw:tests-approved] } }
@@ -456,7 +456,7 @@ flows:
           # advances the flow, so approved is a no-op. The PR is gated by
           # review-pr (see the review flow, on ready_for_review).
           - skill: create-implementation
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft implementation"]
           - on_outcome:
               approved: {}
               _:        { labels: { add: [llmaw:needs-human] }, comment: "Implementation produced no PR; needs review." }
@@ -474,9 +474,9 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-learnings               # terminal
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "record learnings"]
 
-  bugfix:
+  bug:
     description: SDLC bug-fix fast path (check-duplicates -> reproduce -> fix -> PR).
     execution: continuous
     rules:
@@ -522,7 +522,7 @@ flows:
         run:
           - shell: .github/llmaw/scripts/ensure-branch.sh
           - skill: create-learnings               # terminal
-          - shell: .github/llmaw/scripts/commit-sdlc.sh
+          - shell: [.github/llmaw/scripts/commit-sdlc.sh, "record learnings"]
 
   review:
     description: Automated PR review and interactive comment handling.

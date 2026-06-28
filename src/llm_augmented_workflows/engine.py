@@ -362,6 +362,47 @@ def normalize_label_step(step: dict[str, Any]) -> dict[str, Any]:
     return {"labels": {"add": list(add), "remove": list(remove), "target": target}}
 
 
+def normalize_shell_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a ``shell`` step into ``{shell: {run, args}}``.
+
+    Accepts:
+
+    - a plain string (the script path, no arguments)::
+
+        - shell: s.sh
+
+    - a list (argv): the first element is the script, the rest are positional
+      arguments (``$1``, ``$2``, ... inside the script)::
+
+        - shell: [s.sh, arg1, arg2]
+
+    Arguments are coerced to strings (argv elements are strings). What the flow
+    specifies travels as arguments; ambient context (``ISSUE_NUMBER``,
+    ``PR_TITLE``, ...) still arrives via the environment set by the dispatcher.
+    """
+    body = step.get("shell")
+    if isinstance(body, str):
+        return {"shell": {"run": body, "args": []}}
+    if isinstance(body, list):
+        if not body:
+            raise ConfigError("shell step list must not be empty")
+        run = body[0]
+        if not isinstance(run, str) or not run.strip():
+            raise ConfigError("shell step list first element must be the script path")
+        args = [str(a) for a in body[1:]]
+        return {"shell": {"run": run, "args": args}}
+    raise ConfigError("shell step must be a string or a list (argv)")
+
+
+def normalize_deterministic_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a pre/post deterministic step (``labels`` or ``shell``)."""
+    if "labels" in step:
+        return normalize_label_step(step)
+    if "shell" in step:
+        return normalize_shell_step(step)
+    return step
+
+
 def normalize_action(action: Any, case_key: str) -> dict[str, Any]:
     """Normalize one verdict action inside an ``on_outcome`` mapping.
 
@@ -420,8 +461,8 @@ def agent_to_dict(agent: AgentStep) -> dict[str, Any]:
 
 
 def rule_to_matrix(rule: Rule) -> dict[str, Any]:
-    deterministic = [normalize_label_step(s) if "labels" in s else s for s in rule.deterministic]
-    post = [normalize_label_step(s) if "labels" in s else s for s in rule.post_deterministic]
+    deterministic = [normalize_deterministic_step(s) for s in rule.deterministic]
+    post = [normalize_deterministic_step(s) for s in rule.post_deterministic]
     return {
         "id": rule.id,
         "flow": rule.flow,

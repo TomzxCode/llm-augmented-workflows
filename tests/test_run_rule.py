@@ -61,6 +61,73 @@ def test_apply_outcome_reused_by_run_rule_is_the_same_function():
     assert run_rule.apply is apply_outcome.apply
 
 
+class _Proc:
+    def __init__(self, rc):
+        self.returncode = rc
+
+
+def test_execute_rule_continues_session_when_outcome_missing(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        run_rule.subprocess, "run", lambda cmd, **k: calls.append(("opencode", cmd)) or _Proc(0)
+    )
+    monkeypatch.setattr(run_rule, "apply", lambda oc, rid="": calls.append(("outcome", rid)))
+    monkeypatch.setattr(apply_outcome, "outcome_present", lambda: False)
+    monkeypatch.setenv("OUTCOME_YAML", str(tmp_path / "outcome.yaml"))
+
+    run_rule._execute_rule(_rule(outcome=True))
+
+    agent_calls = [c for c in calls if c[0] == "opencode"]
+    assert len(agent_calls) == 2  # initial skill run + continuation
+    assert "--continue" in agent_calls[1][1]
+    assert str(tmp_path / "outcome.yaml") in " ".join(agent_calls[1][1])
+    # apply still runs last, after the continuation
+    assert calls[-1] == ("outcome", "r")
+
+
+def test_execute_rule_skips_continuation_when_outcome_present(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        run_rule.subprocess, "run", lambda cmd, **k: calls.append(("opencode", cmd)) or _Proc(0)
+    )
+    monkeypatch.setattr(run_rule, "apply", lambda oc, rid="": calls.append(("outcome", rid)))
+    monkeypatch.setattr(apply_outcome, "outcome_present", lambda: True)
+    monkeypatch.setenv("OUTCOME_YAML", str(tmp_path / "outcome.yaml"))
+
+    run_rule._execute_rule(_rule(outcome=True))
+
+    agent_calls = [c for c in calls if c[0] == "opencode"]
+    assert len(agent_calls) == 1  # only the initial skill run, no continuation
+
+
+def test_execute_rule_skips_continuation_without_on_outcome(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        run_rule.subprocess, "run", lambda cmd, **k: calls.append(("opencode", cmd)) or _Proc(0)
+    )
+    monkeypatch.setattr(apply_outcome, "outcome_present", lambda: False)
+    monkeypatch.setenv("OUTCOME_YAML", str(tmp_path / "outcome.yaml"))
+
+    run_rule._execute_rule(_rule(outcome=False))
+
+    agent_calls = [c for c in calls if c[0] == "opencode"]
+    assert len(agent_calls) == 1  # no on_outcome -> nothing to continue for
+
+
+def test_execute_rule_skips_continuation_when_outcome_yaml_unset(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        run_rule.subprocess, "run", lambda cmd, **k: calls.append(("opencode", cmd)) or _Proc(0)
+    )
+    monkeypatch.setattr(run_rule, "apply", lambda oc, rid="": calls.append(("outcome", rid)))
+    monkeypatch.delenv("OUTCOME_YAML", raising=False)
+
+    run_rule._execute_rule(_rule(outcome=True))
+
+    agent_calls = [c for c in calls if c[0] == "opencode"]
+    assert len(agent_calls) == 1  # no outcome contract -> no continuation
+
+
 # --------------------------------------------------------------------------- #
 # continuous execution loop
 # --------------------------------------------------------------------------- #
@@ -222,7 +289,7 @@ def test_run_continuous_respects_iteration_cap(monkeypatch, tmp_path):
 def test_main_event_driven_runs_seed_once_even_if_labels_would_chain(monkeypatch, tmp_path):
     p = _write_flows(tmp_path, _CHAIN_FLOWS)
     monkeypatch.setenv("FLOWS_FILE", str(p))
-    monkeypatch.setenv("MATCHED_RULE", '[]')  # will be overridden below via MATCHED_FILE
+    monkeypatch.setenv("MATCHED_RULE", "[]")  # will be overridden below via MATCHED_FILE
     monkeypatch.setenv("EXECUTION", "event-driven")
     monkeypatch.setenv("ISSUE_NUMBER", "5")
     monkeypatch.setattr(run_steps, "_current_subject", lambda: (5, "issue"))

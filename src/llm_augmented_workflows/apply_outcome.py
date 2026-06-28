@@ -42,6 +42,11 @@ def _read_outcome() -> dict:
     return data
 
 
+def outcome_present() -> bool:
+    """True if ``$OUTCOME_YAML`` exists and declares a ``verdict``."""
+    return bool(_read_outcome().get("verdict"))
+
+
 def _post_comment(number: int, kind: str, body: str) -> None:
     run_steps._gh([kind, "comment", str(number), "--body", body])
 

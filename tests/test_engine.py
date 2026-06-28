@@ -20,6 +20,7 @@ from llm_augmented_workflows.engine import (
     normalize_label_step,
     normalize_on_outcome,
     normalize_run,
+    normalize_shell_step,
     parse_execution,
     parse_when,
     resolve_dispatch_execution,
@@ -277,6 +278,62 @@ def test_normalize_label_step_coerces_strings():
 def test_normalize_label_step_rejects_bad_target():
     with pytest.raises(ConfigError):
         normalize_label_step({"labels": {"target": "nowhere"}})
+
+
+# --------------------------------------------------------------------------- #
+# normalize_shell_step
+# --------------------------------------------------------------------------- #
+def test_normalize_shell_step_string_form():
+    assert normalize_shell_step({"shell": "s.sh"}) == {
+        "shell": {"run": "s.sh", "args": []}
+    }
+
+
+def test_normalize_shell_step_list_form_with_args():
+    out = normalize_shell_step({"shell": ["s.sh", "a", "b"]})
+    assert out == {"shell": {"run": "s.sh", "args": ["a", "b"]}}
+
+
+def test_normalize_shell_step_list_coerces_args_to_strings():
+    out = normalize_shell_step({"shell": ["s.sh", 5, True]})
+    assert out["shell"]["args"] == ["5", "True"]
+
+
+def test_normalize_shell_step_rejects_empty_list():
+    with pytest.raises(ConfigError):
+        normalize_shell_step({"shell": []})
+
+
+def test_normalize_shell_step_rejects_non_string_script():
+    with pytest.raises(ConfigError):
+        normalize_shell_step({"shell": [5, "a"]})
+
+
+def test_normalize_shell_step_rejects_dict_form():
+    # only string and list (argv) are supported; dict is not
+    with pytest.raises(ConfigError):
+        normalize_shell_step({"shell": {"run": "s.sh"}})
+
+
+def test_shell_args_threads_through_matrix(tmp_path):
+    path = write_flows(
+        tmp_path,
+        """
+        flows:
+          f:
+            rules:
+              - id: r
+                when: {event: issues, action: labeled, label: llmaw:x}
+                run:
+                  - skill: create-x
+                  - shell: [.github/llmaw/scripts/commit-sdlc.sh, "draft x"]
+        """,
+    )
+    r = flatten_rules(load_flows(path), "m", "r")[0]
+    m = rule_to_matrix(r)
+    step = m["post_deterministic"][0]["shell"]
+    assert step["run"] == ".github/llmaw/scripts/commit-sdlc.sh"
+    assert step["args"] == ["draft x"]
 
 
 def test_compute_label_diff_is_idempotent():
