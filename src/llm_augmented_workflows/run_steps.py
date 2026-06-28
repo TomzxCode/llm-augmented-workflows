@@ -88,6 +88,23 @@ def apply_labels(step: dict) -> None:
     log.info("labels %s #%d: +%s -%s", kind, number, to_add, to_remove)
 
 
+def _resolve_script(script: str) -> str:
+    """Resolve a script path against the main-pinned tooling root when set.
+
+    The dispatcher snapshots ``.github/llmaw/`` (from main) into
+    ``$LLMAW_TOOLING_ROOT`` before any rule switches the working tree to the
+    per-issue branch, so scripts always run from main rather than whatever the
+    branch carries. Falls back to the path as given (relative to cwd) when the
+    var is unset or the snapshot does not contain the file.
+    """
+    root = os.environ.get("LLMAW_TOOLING_ROOT", "").strip()
+    if root and not os.path.isabs(script):
+        candidate = os.path.join(root, script)
+        if os.path.exists(candidate):
+            return candidate
+    return script
+
+
 def run_shell(step: dict) -> None:
     body = step["shell"]
     if isinstance(body, str):
@@ -96,6 +113,7 @@ def run_shell(step: dict) -> None:
         script, args = body["run"], body.get("args") or []
     else:
         raise ValueError(f"invalid shell step body: {body!r}")
+    script = _resolve_script(script)
     log.info("running shell step: %s %s", script, " ".join(args))
     subprocess.run(["bash", script, *args], check=True)
 

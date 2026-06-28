@@ -123,15 +123,29 @@ jobs:
           path: .llmaw
           fetch-depth: 1
 
+      # Pin the llmaw tooling (flows.yml + scripts) to main: snapshot it before
+      # any rule switches the working tree to the per-issue branch. Skills still
+      # edit and commit the branch's content; only the automation that drives
+      # them (flows.yml, scripts) is pinned, so in-flight issues pick up fixes
+      # the moment they land on main. LLMAW_TOOLING_ROOT + FLOWS_FILE are read
+      # by the engine to resolve scripts and (re-)read flows in continuous mode.
+      - name: Pin llmaw tooling to main
+        run: |
+          tooling="${RUNNER_TEMP}/llmaw-tooling"
+          rm -rf "${tooling}"
+          mkdir -p "${tooling}/.github"
+          cp -r .github/llmaw "${tooling}/.github/llmaw"
+          echo "LLMAW_TOOLING_ROOT=${tooling}" >> "${GITHUB_ENV}"
+          echo "FLOWS_FILE=${tooling}/.github/llmaw/flows.yml" >> "${GITHUB_ENV}"
+
       - name: Setup uv
         uses: astral-sh/setup-uv@v8.2.0
         with:
           working-directory: .llmaw
-
+          
       - name: Route event to matching rules
         id: route
         env:
-          FLOWS_FILE: .github/llmaw/flows.yml
           FORCE_RULE_ID: ${{ inputs.rule-id }}
           EXECUTION: ${{ inputs.execution || vars.LLMAW_EXECUTION || '' }}
           MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
@@ -169,7 +183,6 @@ jobs:
         env:
           MATCHED_FILE: ${{ runner.temp }}/llmaw-matched.json
           OUTCOME_YAML: ${{ runner.temp }}/outcome.yaml
-          FLOWS_FILE: .github/llmaw/flows.yml
           EXECUTION: ${{ steps.route.outputs.execution }}
           LLMAW_MAX_ITERATIONS: ${{ vars.LLMAW_MAX_ITERATIONS || '30' }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
