@@ -2,7 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
-revision: 2
+revision: 3
 ---
 
 # Specification: Client/Server architecture
@@ -86,6 +86,8 @@ The `gh_token` field stores sensitive GitHub credentials. At rest, the value is 
 
 **Key rotation procedure:** To rotate the encryption key, the operator provides both `TOKEN_ENCRYPTION_KEY_OLD` (the current key) and `TOKEN_ENCRYPTION_KEY` (the new key) as environment variables at startup. The server reads every token from the database, decrypts with `TOKEN_ENCRYPTION_KEY_OLD`, re-encrypts with `TOKEN_ENCRYPTION_KEY`, and writes the updated ciphertext. After a successful rotation, `TOKEN_ENCRYPTION_KEY_OLD` is unset and only `TOKEN_ENCRYPTION_KEY` is retained. If `TOKEN_ENCRYPTION_KEY_OLD` is not provided, a normal startup proceeds (existing tokens are decrypted with `TOKEN_ENCRYPTION_KEY`).
 
+**Bulk token re-encryption behavior:** Re-encryption at startup processes rows in batches of 100, logging progress after each batch (e.g., `"Re-encrypted 800/1200 tokens"`). A per-row error (e.g., corrupt ciphertext) logs the row ID and skips that row; the server continues startup without failing. The entire re-encryption is subject to a startup timeout of 30 seconds (configurable via `TOKEN_ENCRYPTION_TIMEOUT_SECONDS`). If the timeout is reached before all rows are processed, the server logs the count of remaining rows, skips re-encryption for those rows (existing tokens remain decryptable by `TOKEN_ENCRYPTION_KEY_OLD`), and proceeds to serve requests. A separate maintenance command (`llmaw-admin reencrypt-tokens`) can be invoked at runtime to complete the remaining rows without a restart.
+
 **Migration from plaintext to encryption (and back):** When `TOKEN_ENCRYPTION_KEY` is first set after a period of running without it, the server re-encrypts all plaintext tokens on startup. To decrypt (returning to development mode), set `TOKEN_ENCRYPTION_KEY` to the current key and `TOKEN_ENCRYPTION_KEY_OLD` to empty — the server decrypts all tokens to plaintext and logs a warning. This path exists only for development and disaster recovery; production deployments should always set `TOKEN_ENCRYPTION_KEY`.
 
 Consumers must ignore unknown fields in response payloads. The `metadata` column exists for forward-compatible addition of backend-specific configuration without schema migration.
@@ -109,6 +111,31 @@ Sessions are keyed by `(repo_id, subject_type, subject_id)`. The `conversation_h
 **Session expiry and cleanup:** Sessions expire after 7 days of inactivity (no new webhook events for that `(repo_id, subject_type, subject_id)` key). Expiry is checked lazily: when a new webhook event arrives for an expired session, the server creates a fresh session instead of loading the stale one. A background reaper task runs every hour, deleting sessions whose `updated_at` is older than a configurable `SESSION_TTL_HOURS` (default 168, i.e., 7 days). The reaper logs its deletion count and skips if database contention is detected (SQLITE_BUSY). Session count is tracked in the `/health` endpoint as active (non-expired) sessions. The `SESSIONS_MAX_AGE_HOURS` environment variable overrides the default TTL.
 
 The `repositories.version` field supports canary deployments (FR-10) by selecting runtime configuration variants within a single container. The server maintains a mapping from version strings (e.g., `"v1"`, `"v2-canary"`) to agent configuration bundles: model identifier, system prompt template path, skill repository reference, and maximum iteration count. When processing a webhook for a repository with `version: "v2-canary"`, the server selects the `v2-canary` config bundle. All versions share the same engine code and binary; only the configuration differs. The set of available versions is defined in a YAML file mounted into the container (`/etc/llmaw/versions.yaml`), and the default version (`"v1"`) is always present. This approach satisfies multi-version support within NFR-07's single-container constraint. Future growth to separate binaries would require breaking NFR-07 or switching to a sidecar model.
+
+**`versions.yaml` schema:**
+
+```yaml
+# /etc/llmaw/versions.yaml — defines available agent configuration bundles
+# The "v1" version must always be present and acts as the default.
+# Unknown fields in any version block are accepted and ignored (forward compat).
+versions:
+  v1:
+    model: "gpt-4o"              # Model identifier passed to opencode CLI
+    system_prompt: "/etc/llmaw/prompts/default.md"  # Path to system prompt template
+    skill_repository: "https://github.com/org/skills.git"  # Git URL of skills repo
+    skill_ref: "main"            # Git branch, tag, or commit SHA
+    max_iterations: 10           # Maximum continuous chaining iterations
+    metadata: {}                 # Reserved for version-specific extensions
+  v2-canary:
+    model: "gpt-4.1"
+    system_prompt: "/etc/llmaw/prompts/canary.md"
+    skill_repository: "https://github.com/org/skills.git"
+    skill_ref: "canary"
+    max_iterations: 15
+    metadata: {}
+```
+
+The `versions.yaml` file is read at server startup during the initialization phase, before the health endpoint reports healthy. If the file is missing or malformed, the server logs a fatal error and exits. Each field within a version block is optional; missing fields fall back to the `v1` defaults. The `metadata` field provides a forward-compatible extension point for version-specific configuration that does not yet have a dedicated field. The set of available versions is cached in memory for the lifetime of the process; a server restart is required to pick up changes to the file.
 
 ### `webhook_events`
 
@@ -160,13 +187,15 @@ Accepts GitHub webhook deliveries. The request body is the raw webhook payload; 
 
 Arbitrary JSON payload from GitHub. The server does not validate the payload schema beyond valid JSON — unknown fields are accepted and preserved in the `webhook_events.payload` column.
 
+**Unsupported event types:** If `X-GitHub-Event` is not one of the supported event types (`push`, `pull_request`, `issue_comment`, `issues`), the server responds with HTTP 200 and `status: "skipped"`. A `webhook_events` row is inserted with `status: "skipped"` for audit trail purposes, but no session is loaded or created and no agent pipeline is dispatched.
+
 **Response 200**
 
 ```json
 {
   "status": "accepted",
   "delivery_id": "abc-123",
-  "event_id": "uuid"
+  "id": "uuid"
 }
 ```
 
@@ -174,7 +203,20 @@ Arbitrary JSON payload from GitHub. The server does not validate the payload sch
 |---|---|---|
 | status | string | Always "accepted" on successful receipt |
 | delivery_id | string | Echo of `X-GitHub-Delivery` header |
-| event_id | string | Internal event record UUID |
+| id | string | Internal event record UUID |
+
+**Response 200 (Unsupported event type)**
+
+```json
+{
+  "status": "skipped",
+  "delivery_id": "abc-123",
+  "id": "uuid",
+  "reason": "unsupported_event_type"
+}
+```
+
+Returned when `X-GitHub-Event` is not one of the supported types. The `webhook_events` row is recorded for audit, but no session or pipeline dispatch occurs.
 
 **Response 401 (HMAC mismatch)**
 
@@ -188,18 +230,18 @@ Arbitrary JSON payload from GitHub. The server does not validate the payload sch
 }
 ```
 
-**Response 409 (Idempotency)**
+**Response 200 (Idempotency — duplicate delivery)**
 
 ```json
 {
   "status": "skipped",
   "delivery_id": "abc-123",
-  "event_id": "uuid",
+  "id": "uuid",
   "reason": "duplicate_delivery"
 }
 ```
 
-Returned when the same `X-GitHub-Delivery` was already processed. The `event_id` refers to the existing `webhook_events` row created during the first delivery — no new row is inserted. This is not an error; it is the expected outcome of GitHub's at-least-once delivery guarantee.
+Returned when the same `X-GitHub-Delivery` was already processed (idempotency replay). The `id` refers to the existing `webhook_events` row created during the first delivery — no new row is inserted. HTTP 200 is used rather than an error status because this is the expected outcome of GitHub's at-least-once delivery guarantee, not a problem condition.
 
 **Error Responses**
 
@@ -208,6 +250,7 @@ Returned when the same `X-GitHub-Delivery` was already processed. The `event_id`
 | 400 | INVALID_PAYLOAD | Body is not valid JSON |
 | 401 | INVALID_SIGNATURE | HMAC verification failed |
 | 404 | UNKNOWN_REPOSITORY | No registration matches `owner/repo` derived from the event |
+| 200 | SKIPPED | Unsupported event type or duplicate delivery (see 200 responses above) |
 | 503 | SERVICE_UNAVAILABLE | Server is shutting down (graceful drain) |
 | 429 | RATE_LIMITED | Too many requests (10 requests per second per IP, burst limit 20). Implemented via in-memory token bucket. Exemptions: health checks are not rate limited. |
 
@@ -292,7 +335,9 @@ The request body is JSON. Unknown fields are accepted and stored in `repositorie
     "id": "uuid",
     "owner": "my-org",
     "repo": "my-repo",
-    "active": true
+    "active": true,
+    "version": "v1",
+    "created_at": "2026-06-28T00:00:00Z"
   }
 }
 ```
@@ -352,7 +397,9 @@ Unknown fields are accepted and stored in `repositories.metadata` for forward co
     "id": "uuid",
     "owner": "my-org",
     "repo": "my-repo",
-    "active": true
+    "active": true,
+    "version": "v1",
+    "created_at": "2026-06-28T00:00:00Z"
   }
 }
 ```
