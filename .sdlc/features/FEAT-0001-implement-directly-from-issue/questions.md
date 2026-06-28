@@ -11,5 +11,17 @@ Open questions from requirements review (FEAT-0001):
 4. How should metrics be exposed to the project owner? Via GitHub issue comments, a dashboard, or logs? (FR-07 requires metrics but the mechanism is open.)
 
 5. How many features in the existing issue tracker would qualify for the express path? Usage data is absent; understanding frequency would strengthen implementation priority.
+
 6. Should express-path eligibility be decided at triage time (extending the triage-issue skill's verdict) or as a separate routing step after triage? (From existing-solutions review.)
+
 7. How should the express path handle the initial issue triage record? Options: consume triage verdict as-is, add a new triage class, or re-classify after triage. (From existing-solutions review.)
+
+Open questions from feasibility review:
+
+8. What is the rollback/exit strategy if the express path fails in production (e.g., incorrect implementations, classification errors, orphaned label states)? The feasibility assessment conditions do not specify how to back out.
+
+9. What does the "M" effort estimate represent in concrete terms (person-days, story points, or calendar time)? Without a definition the estimate is untestable.
+
+10. Is the assumption that the flows engine can be extended with new express-flow rules without refactoring existing flow matching logic validated? This should be recorded as an assumption and verified.
+
+11. Does the triage-issue skill external repo have a release process that guarantees lockstep shipping with this project's flow config? If not, what fallback behavior applies during the gap?
