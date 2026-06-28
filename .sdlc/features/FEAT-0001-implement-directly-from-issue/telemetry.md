@@ -1,7 +1,7 @@
 ---
 issue: "#17"
 title: "Implement directly from issue"
-status: in-review
+status: approved
 revision: 4
 ---
 
