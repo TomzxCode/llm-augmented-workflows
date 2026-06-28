@@ -1,7 +1,7 @@
 ---
 issue: "#17"
 title: "Implement directly from issue"
-status: draft
+status: in-review
 ---
 
 # Observability: Implement directly from issue
