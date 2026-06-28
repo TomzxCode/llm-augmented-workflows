@@ -1,7 +1,7 @@
 ---
 issue: "#16"
 title: "Client/Server architecture"
-status: in-review
+status: approved
 revision: 1
 ---
 
