@@ -2,6 +2,7 @@
 issue: "#18"
 title: "Support other harness CLI"
 status: in-review
+revision: 1
 ---
 
 # Existing Solutions: Support Other Harness CLI
@@ -15,7 +16,7 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 | Source | Searched | Notes |
 |---|---|---|
 | Internal codebase | Yes | `src/llm_augmented_workflows/run_rule.py`, `engine.py`, `run_steps.py` — no existing abstraction; opencode is hardcoded. The `shell` step type provides a precedent for running arbitrary commands but lacks verdict routing. |
-| Open-source | Yes | flowai-workflow (MIT, Deno/TS), StackStorm (Apache 2.0, Python), Mastra (MIT, TS), n8n (Sustainable, TS), opencode-cli-enforcer (MIT, TS), verdict (MIT, Python), cli-agent-spec exit codes |
+| Open-source | Yes | flowai-workflow (MIT, Deno/TS), StackStorm (Apache 2.0, Python), Mastra (MIT, TS), n8n (Sustainable, TS), opencode-cli-enforcer (MIT, TS), verdict (MIT, Python), cli-agent-spec exit codes; Python ecosystem: pluggy (MIT, plugin framework used by pytest), sh (MIT, subprocess), invoke (BSD, subprocess/task runner), plumbum (MIT, subprocess/remote) |
 | Commercial / SaaS | Yes | Temporal (MIT, Go/Python/TS), n8n Cloud, Anthropic Claude Code CLI, Codex CLI, Google Gemini CLI |
 | Standards / protocols | Yes | MCP (JSON-RPC over stdio), Unix exit code conventions, cli-agent-spec ExitCode schema, Python subprocess docs |
 | Reference material | Yes | Structured exit reasons blog post (JoelClaw), Safe IPC Patterns (Zylos Research), Codex App Server Protocol, Claude Agent SDK architecture |
@@ -28,11 +29,13 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 | flowai-workflow | Library | MIT | Active | FR-01 (runtime selectable per node), `runtime_args`, timeout per node | Deno/TS not Python; no verdict parser abstraction; no sandboxing |
 | StackStorm runners | Platform | Apache 2.0 | Mature | FR-01 (pluggable action runners via stevedore), timeout, env vars, result handling | Heavy platform dependency (RabbitMQ, MongoDB, 12 microservices); no AI-specific support |
 | Mastra | Framework | MIT | Active | FR-01 (model routing across 40+ providers), FR-07 (env vars per agent) | TS not Python; full framework adoption; no verdict parser contract |
-| n8n AI Agent | Platform | Sustainable | Mature | FR-01 (multi-provider LLM), output parser interface, timeout, HITL | Full platform migration; visual UI focus; no CLI customization |
-| opencode-cli-enforcer | Library | MIT | Active | FR-01 (multi-CLI orchestration), circuit breaker, retry, fallback chain | TS; no verdict parser abstraction; no setup hooks |
-| Temporal | Platform | MIT | Mature | FR-01 (durable activity execution), timeout, retry, env vars | Heavy infrastructure (server + worker); overkill for single-step agent invocation |
+| n8n AI Agent | Platform | Sustainable | Mature | FR-01 (multi-provider LLM), output parser interface, timeout, HITL | Full platform migration; visual UI focus; no CLI customization; n8n Cloud pricing starts at $20/mo (self-hosted free) |
+| opencode-cli-enforcer | Library | MIT | Active (small npm package, ~50 stars, single maintainer) | FR-01 (multi-CLI orchestration), circuit breaker, retry, fallback chain | TS; no verdict parser abstraction; no setup hooks |
+| Temporal | Platform | MIT | Mature | FR-01 (durable activity execution), timeout, retry, env vars | Heavy infrastructure (server + worker); overkill for single-step agent invocation; Temporal Cloud pricing per workflow-task (~$0.10 per 10k tasks) |
 | cli-agent-spec ExitCode | Standard | CC-BY-4.0 | Draft | FR-03 (structured exit codes with retryable/side-effects semantics) | Not a library; requires integration; no opinion on stdin parsing |
-| verdict (haizelabs) | Library | MIT | Active | FR-03 (structured output extraction from LLM), composable judge protocols | Focused on LLM-as-judge, not generic CLI subprocess; over-engineered for verdict parsing |
+| pluggy | Library | MIT | Mature | FR-09 (hook-based plugin loading via hookspec/hookimpl decorators) | Not a parser framework; provides plugin discovery/loading pattern only |
+| sh, invoke, plumbum | Library | MIT / BSD / MIT | Mature | FR-01 (subprocess management: command execution, timeout, env passthrough) | No verdict routing; sh is synchronous-only; invoke adds task-runner semantics; plumbum supports remote |
+| verdict (haizelabs) | Library | MIT | Active | FR-03 (structured output extraction from LLM), composable judge protocols | LLM-as-judge framework, not a generic CLI verdict parser; the RegexExtractor pattern for extracting JSON fields from LLM output is informative for built-in parsers |
 | Structured Exit Reasons | Reference | — | Conceptual | FR-03 (9-value exit enum driving retry policy) | Not a library; provides classification pattern only |
 | MCP (Model Context Protocol) | Standard | MIT | Active | Subprocess stdio protocol, JSON-RPC framing, tool lifecycle | Not designed for verdict routing; heavy for simple parser contract |
 | Unix exit codes | Standard | — | Mature | FR-03 (0=success, non-zero=failure convention), Python subprocess support | Coarse granularity; 0/1-only tools lose nuance; no side-effect tracking |
@@ -45,7 +48,7 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 - **Weaknesses:** No verdict routing — user must manually implement label changes, issue closing, etc. No setup hooks. No timeout configuration. No environment variable mapping.
 - **Integration effort:** Low — extend existing `run_shell_step` with optional verdict parser callback.
 - **Cost:** None (already built).
-- **Risks:** Minimal. Adding code to a working path risks regressions; mitigated by keeping the default path unchanged (NFR-02).
+- **Risks:** Minimal. Adding code to a working path risks regressions; mitigated by keeping the default path unchanged (NFR-02). Security: the existing shell step has no sandboxing — verdict parsers will need the new sandbox layer (NFR-03).
 - **Forward compatibility:** High — no external dependency; changes are self-contained.
 
 ### flowai-workflow (korchasa/flowai-workflow)
@@ -54,7 +57,7 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 - **Weaknesses:** Written in Deno/TypeScript, not Python. Integrating would require either a subprocess bridge or a language migration. No verdict parser abstraction (relies on exit code only). No sandboxing.
 - **Integration effort:** High — would need to run as a sidecar or port to Python.
 - **Cost:** Free (MIT), but has 8 weekly downloads — low community adoption.
-- **Risks:** Low community adoption; JSR package ecosystem less established than npm/PyPI. Single maintainer risk.
+- **Risks:** Low community adoption; JSR package ecosystem less established than npm/PyPI. Single maintainer risk. Security: no sandboxing — subprocesses inherit the host environment without restriction.
 - **Forward compatibility:** Semantic versioning on JSR; upgrade within minor range should be safe.
 
 ### StackStorm runners
@@ -63,7 +66,7 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 - **Weaknesses:** Heavy architecture — requires RabbitMQ, MongoDB, 12+ microservices for full deployment. The runner plugin system is tightly coupled to StackStorm's action execution lifecycle. Would need to extract just the runner abstraction, not viable as a dependency.
 - **Integration effort:** Very high — cannot adopt as a library; would need to extract the runner abstraction pattern.
 - **Cost:** Free (Apache 2.0).
-- **Risks:** Architectural extraction is speculative; undocumented internals.
+- **Risks:** Architectural extraction is speculative; undocumented internals. Security: StackStorm uses virtualenv isolation for Python runners and provides user-scoped permission models — these patterns are informative for NFR-03 sandbox design but the full stack (RabbitMQ, MongoDB) introduces a large attack surface.
 - **Forward compatibility:** N/A (pattern adoption only).
 
 ### cli-agent-spec ExitCode
@@ -72,17 +75,35 @@ Surveyed 12 candidates across internal code, open-source libraries, commercial p
 - **Weaknesses:** Draft specification, not a library. Lacks stdin/stdout protocol design (no opinion on how parsers receive input). Focused on CLIs in general, not AI verdict specifically.
 - **Integration effort:** Low — adopt the exit code table as the verdict parser contract.
 - **Cost:** Free (CC-BY-4.0).
-- **Risks:** Specification is not widely adopted; could conflict with opencode's existing exit code convention (0=approved, 1=changes-requested, 2+=rejected).
+- **Risks:** Low community adoption (~5 GitHub stars); specification is not widely referenced. Could conflict with opencode's existing exit code convention (0=approved, 1=changes-requested, 2+=rejected). Single author risk — if abandoned, no community fork exists.
 - **Forward compatibility:** Stable; spec changes would be additive.
 
 ### MCP (Model Context Protocol)
 
-- **Strengths:** Standardized subprocess communication protocol (JSON-RPC over stdio). Used by Claude, Codex, Mastra, n8n. Well-documented transport specification. Strict rule: stdout is protocol traffic only, stderr for logs.
+- **Strengths:** Standardized subprocess communication protocol (JSON-RPC over stdio). Used by Claude, Codex, Mastra, n8n. Well-documented transport specification. Strict rule: stdout is protocol traffic only, stderr for logs. This stdout/stderr separation is directly applicable to the parser sandbox design (NFR-03) — parsers should only read stdout, never stderr.
 - **Weaknesses:** Designed for tool invocation, not verdict routing. JSON-RPC overhead for a simple exit-code + optional reason contract. Requires an MCP server per runtime.
 - **Integration effort:** High — would need to implement an MCP client and wrap each runtime in an MCP server.
 - **Cost:** Free (MIT).
-- **Risks:** Misaligned abstraction level. Verdict parsing is simpler than MCP's full tool lifecycle.
+- **Risks:** Misaligned abstraction level. Verdict parsing is simpler than MCP's full tool lifecycle. Security: MCP enforces stdout as protocol traffic with structured JSON-RPC framing, providing a hardened channel for subprocess communication; adopting this discipline strengthens the parser contract.
 - **Forward compatibility:** Evolving standard; the stdio transport layer is stable, tool definitions change.
+
+### pluggy
+
+- **Strengths:** De facto Python plugin framework; used by pytest, tox, devpi. Simple hookspec/hookimpl decorator pattern. Well-documented with extensive production use. 4.5k+ GitHub stars, 200M+ downloads. Lightweight (no required dependencies).
+- **Weaknesses:** Provides only plugin loading/dispatch — does not address subprocess management, sandboxing, or parser logic. Must be paired with other code for the full feature.
+- **Integration effort:** Low — add as a dependency (3KB compressed) and define hookspecs for verdict parsers.
+- **Cost:** Free (MIT).
+- **Risks:** None significant. Mature, widely adopted, well-maintained by pytest-dev.
+- **Forward compatibility:** Semantic versioning (stable since 1.0, currently 1.5). Breaking changes are extremely rare.
+
+### sh, invoke, plumbum
+
+- **Strengths:** `sh` (34M+ downloads) provides a Pythonic subprocess API with implicit `$PATH` resolution and timeout support. `invoke` (BSD, used by Fabric) provides subprocess execution with task abstraction. `plumbum` provides local and remote command execution with pipelines and timeouts.
+- **Weaknesses:** `sh` is synchronous-only; `invoke` has a heavier task-runner footprint; `plumbum` adds remote-execution complexity. None provide verdict routing or plugin loading. All are alternatives to stdlib `subprocess`, which already covers the required functionality.
+- **Integration effort:** Low to add any one, but unnecessary — Python's `subprocess` module covers all needed operations (run with timeout, env vars, capture stdout/stderr).
+- **Cost:** Free (MIT/BSD).
+- **Risks:** Dependency bloat. `sh` has had compatibility issues with newer Python versions. `invoke` and `plumbum` add abstractions that hide subprocess details we need direct control over (exit codes, sandboxing).
+- **Forward compatibility:** All three are stable but evolve slowly.
 
 ## Recommendation
 
@@ -114,6 +135,8 @@ The right approach is a lightweight abstraction in `engine.py` and `run_rule.py`
 - **MCP stdio transport**: Strict rule — stdout is protocol traffic, stderr is for logs. Adopt this convention for verdict parsers.
 - **Safe IPC Patterns (Zylos Research)**: Pass payload via stdin not argv; validate JSON before acting on it; restrict subprocess environment. Directly applicable to NFR-03 (sandboxed parsers).
 - **Verdict (haizelabs)**: Structured output extraction from LLM output. The `RegexExtractor` and `InstructorExtractor` patterns inform how built-in parsers for Codex/Gemini could work.
+- **pluggy**: Hookspec/hookimpl plugin registration pattern for FR-09. Simpler than stevedore for the distributable parser path.
+- **sh, invoke, plumbum**: Proven Python subprocess patterns (duration/timeout handling, env passthrough, exit code capture). Primarily confirm that stdlib `subprocess` is sufficient without adding dependencies.
 
 ## Open Questions
 
