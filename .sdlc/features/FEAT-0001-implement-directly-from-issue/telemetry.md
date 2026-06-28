@@ -2,6 +2,7 @@
 issue: "#17"
 title: "Implement directly from issue"
 status: in-review
+revision: 1
 ---
 
 # Telemetry: Implement directly from issue
@@ -16,7 +17,8 @@ This feature adds an express path that routes eligible issues directly from tria
 |---|---|---|---|
 | Express-path adoption rate | > 30% of feature-classified issues | `gh issue list --label llmaw:express-done` / `gh issue list --label llmaw:feature-request` | Monthly |
 | Express implementation success rate | > 80% | `gh issue list --label llmaw:express-done` / (`llmaw:express-done` + `llmaw:express-failed`) | Monthly |
-| Token savings vs. full pipeline | < 60% of full pipeline tokens | Sum LLM API input+output tokens per express run vs. comparable full-pipeline run; two-tailed t-test (p < 0.05) | Per run, reviewed after 5 runs |
+| Classification breakdown visibility | Eligible vs. ineligible counts tracked | Aggregate `issue_classified` events by verdict and complexity; report as label-based queries (`llmaw:express-eligible` vs. `llmaw:feature-request`) | Monthly |
+| Token savings vs. full pipeline | < 60% of full pipeline tokens | Compare express-run token counts against a historical baseline of 5 comparable full-pipeline runs (established during validation). In production, report absolute token counts per run without a counterfactual; the baseline is re-evaluated quarterly. Two-tailed t-test (p < 0.05) used during baseline establishment. | Per run, reviewed after 5 runs |
 | Median time from issue open to PR creation | < 30 min for express path | Timediff between `created_at` and PR `created_at` for issues with `llmaw:express-done` | Weekly |
 | Classification accuracy | < 20% false-positive rate | Issues labeled `llmaw:express-eligible` that resolve to `llmaw:express-failed` | Per run |
 
@@ -51,6 +53,19 @@ This feature adds an express path that routes eligible issues directly from tria
 | verdict | string | Yes | `feature`, `bug`, `needs-info`, `other` |
 | complexity | string | No | `low`, `medium`, `high`; absent when not determined |
 | reason | string | No | Free-text rationale for classification |
+| source | string | Yes | `server` |
+
+### classification_comment_posted
+
+**Trigger:** Triage flow `on_outcome` posts classification rationale as an issue comment (controlled by `defaults.express.comment_on_classification`)
+**Location:** `flows.yml` on_outcome handler
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| issue_number | number | Yes | GitHub issue number |
+| verdict | string | Yes | `feature`, `bug`, `needs-info`, `other` |
+| complexity | string | No | `low`, `medium`, `high`; absent when not determined |
+| route | string | Yes | `express` or `full_pipeline` |
 | source | string | Yes | `server` |
 
 ### express_eligibility_set
@@ -110,6 +125,19 @@ This feature adds an express path that routes eligible issues directly from tria
 | duration_seconds | number | Yes | Wall-clock time before failure |
 | source | string | Yes | `server` |
 
+### workflow_step_failed
+
+**Trigger:** An upstream infrastructure step fails (triage skill crash, label application failure via `gh issue edit`, workflow dispatch error, or missing outcome YAML)
+**Location:** GitHub Actions workflow run logs; inferred from step failure in the workflow
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| issue_number | number | No | GitHub issue number if available at the failure point |
+| step_name | string | Yes | `triage-issue`, `apply-label`, `dispatch-express`, `create-implementation` |
+| error_type | string | Yes | `skill_crash`, `label_apply_failed`, `workflow_dispatch_error`, `missing_outcome`, `timeout` |
+| error_message | string | No | Free-text error detail from workflow logs |
+| source | string | Yes | `server` |
+
 ### express_override_used
 
 **Trigger:** Human applies `llmaw:quick-implement` label to an issue
@@ -119,6 +147,18 @@ This feature adds an express path that routes eligible issues directly from tria
 |---|---|---|---|
 | issue_number | number | Yes | GitHub issue number |
 | previous_labels | string[] | Yes | Labels on the issue before the override |
+| source | string | Yes | `server` |
+
+### express_label_removed
+
+**Trigger:** A human removes `llmaw:express-eligible` or `llmaw:quick-implement` from an issue, causing fallback to the full pipeline
+**Location:** GitHub issue label event (inferable from `issues:labeled` event payload with `action: removed`)
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| issue_number | number | Yes | GitHub issue number |
+| label_removed | string | Yes | `llmaw:express-eligible` or `llmaw:quick-implement` |
+| previous_labels | string[] | Yes | Labels remaining on the issue after removal |
 | source | string | Yes | `server` |
 
 ### full_pipeline_triggered
