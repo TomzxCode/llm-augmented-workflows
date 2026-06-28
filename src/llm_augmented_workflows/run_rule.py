@@ -15,6 +15,7 @@ sets ``GH_TOKEN`` / ``ISSUE_NUMBER`` / ``PR_NUMBER`` / etc. on this step.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -27,6 +28,23 @@ from .apply_outcome import apply
 from .engine import NEEDS_HUMAN_LABEL, ConfigError
 
 log = logging.getLogger("run_rule")
+
+
+@contextlib.contextmanager
+def _log_group(title: str):
+    """Fold stdout under a collapsible group in GitHub Actions logs.
+
+    Emits the ``::group::``/``::endgroup::`` workflow commands only inside a
+    GitHub Actions runner (detected via ``GITHUB_ACTIONS``); a no-op elsewhere
+    so local runs and unit tests stay quiet.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::group::{title}")
+    try:
+        yield
+    finally:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print("::endgroup::")
 
 
 def _read_rules() -> list[dict]:
@@ -126,20 +144,22 @@ def _continue_for_outcome(agent: dict, on_outcome: dict) -> None:
 
 def _execute_rule(rule: dict) -> None:
     rid = rule.get("id", "?")
-    log.info("=== rule %s ===", rid)
-    if rule.get("has_deterministic"):
-        _run_deterministic(rule.get("deterministic") or [])
-    if rule.get("has_agent"):
-        outcome = os.environ.get("OUTCOME_YAML")
-        if outcome:
-            Path(outcome).unlink(missing_ok=True)  # reset per agent
-        _run_agent(rule["agent"])
-        if rule.get("has_post_deterministic"):
-            _run_deterministic(rule.get("post_deterministic") or [])
-        if rule.get("has_on_outcome") and rule.get("on_outcome"):
-            if os.environ.get("OUTCOME_YAML") and not apply_outcome.outcome_present():
-                _continue_for_outcome(rule["agent"], rule["on_outcome"])
-            apply(rule["on_outcome"], rid)
+    flow = rule.get("flow") or "?"
+    with _log_group(f"Rule {rid} ({flow})"):
+        log.info("=== rule %s ===", rid)
+        if rule.get("has_deterministic"):
+            _run_deterministic(rule.get("deterministic") or [])
+        if rule.get("has_agent"):
+            outcome = os.environ.get("OUTCOME_YAML")
+            if outcome:
+                Path(outcome).unlink(missing_ok=True)  # reset per agent
+            _run_agent(rule["agent"])
+            if rule.get("has_post_deterministic"):
+                _run_deterministic(rule.get("post_deterministic") or [])
+            if rule.get("has_on_outcome") and rule.get("on_outcome"):
+                if os.environ.get("OUTCOME_YAML") and not apply_outcome.outcome_present():
+                    _continue_for_outcome(rule["agent"], rule["on_outcome"])
+                apply(rule["on_outcome"], rid)
 
 
 def _run_continuous(seed_rules: list[dict]) -> int:

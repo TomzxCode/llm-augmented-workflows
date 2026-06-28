@@ -61,6 +61,52 @@ def test_apply_outcome_reused_by_run_rule_is_the_same_function():
     assert run_rule.apply is apply_outcome.apply
 
 
+# --------------------------------------------------------------------------- #
+# GitHub Actions log grouping
+# --------------------------------------------------------------------------- #
+def test_log_group_emits_workflow_commands_in_ci(capsys, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with run_rule._log_group("Rule r (f)"):
+        print("body")
+    out = capsys.readouterr().out
+    assert out.startswith("::group::Rule r (f)\n")
+    assert out.endswith("::endgroup::\n")
+    assert "body\n" in out
+
+
+def test_log_group_is_silent_outside_ci(capsys, monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with run_rule._log_group("Rule r (f)"):
+        print("body")
+    out = capsys.readouterr().out
+    assert out == "body\n"
+
+
+def test_log_group_closes_even_on_exception(capsys, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    try:
+        with run_rule._log_group("Rule r (f)"):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert capsys.readouterr().out.endswith("::endgroup::\n")
+
+
+def test_execute_rule_wraps_invocation_in_group(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    calls = []
+    monkeypatch.setattr(run_steps, "apply_labels", lambda step: calls.append(("labels", step)))
+    monkeypatch.setattr(run_rule.subprocess, "run", lambda cmd, **k: calls.append(("agent", cmd)))
+
+    run_rule._execute_rule(_rule(pre=True))
+
+    out = capsys.readouterr().out
+    assert out.startswith("::group::Rule r (?)\n")
+    assert out.rstrip().endswith("::endgroup::")
+    # body still runs (pre labels then agent, since _rule defaults agent=True)
+    assert [c[0] for c in calls] == ["labels", "agent"]
+
+
 class _Proc:
     def __init__(self, rc):
         self.returncode = rc
