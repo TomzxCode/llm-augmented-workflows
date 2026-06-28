@@ -139,7 +139,21 @@ jobs:
 
       - name: Install opencode
         if: steps.route.outputs.has_agent == 'true'
-        run: curl -fsSL https://opencode.ai/install | bash
+        run: |
+          set -eo pipefail
+          install_url="https://opencode.ai/install"
+          max_attempts=5
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Attempt ${attempt}/${max_attempts}: installing opencode"
+            if curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 "$install_url" | bash; then
+              echo "opencode installed successfully"
+              exit 0
+            fi
+            echo "Attempt ${attempt} failed" >&2
+            [ "$attempt" -lt "$max_attempts" ] && sleep "$((attempt * 10))"
+          done
+          echo "All ${max_attempts} opencode install attempts failed" >&2
+          exit 1
 
       - name: Install skills from ${{ env.AGENTS_REPOSITORY }}
         if: steps.route.outputs.has_agent == 'true'
