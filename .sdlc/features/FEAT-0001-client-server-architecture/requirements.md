@@ -101,19 +101,40 @@ The current automation engine runs inside GitHub Actions runners as a stateless 
     - **When** a webhook payload with a forged or missing signature is received
     - **Then** the server rejects it with HTTP 401
 
+- [ ] **FR-06**
+    - **Given** a running server instance
+    - **When** a GET /health request is sent
+    - **Then** the server responds with HTTP 200 and a JSON body indicating server status
+
+- [ ] **FR-07**
+    - **Given** a server processing an agent execution for a repository
+    - **When** a SIGTERM signal is sent to the server process
+    - **Then** the server completes the in-flight execution before exiting, and processes the next webhook event after restart using the committed session state
+
+- [ ] **NFR-03**
+    - **Given** a running server with no pending backlogs
+    - **When** a webhook payload (excluding LLM inference time) is received
+    - **Then** the server dispatches it to the agent pipeline within 5 seconds, measured from payload receipt to agent invocation
+
+- [ ] **NFR-04**
+    - **Given** a server configured with 10 registered repositories
+    - **When** webhook events are sent concurrently for all 10 repositories at a rate of 1 event per second each
+    - **Then** the server processes all events within NFR-03 timing and no event is dropped
+
 - [ ] **NFR-05**
     - **Given** a server with committed session state for a repository
-    - **When** the server process is killed and restarted
+    - **When** the server process is killed and restarted (same host, same Docker volume)
     - **Then** webhook events for that repository resume processing with the prior session state restored
 
 ## Conflicts
 
-None identified yet.
+| Requirements | Type | Description | Resolution |
+|---|---|---|---|
+| NFR-05, NFR-07 | Functional vs non-functional tension | NFR-05 requires crash recovery without losing committed state (implying durable persistence). NFR-07 restricts runtime to a single Docker container with no external dependencies. Without an external store (Redis, Postgres), state is tied to the local filesystem and lost if the container is rescheduled to a different host. | NFR-05 scope is narrowed: "crash" means a process crash on the same host with the same Docker volume mount. Host-level failure or container reschedule may lose uncommitted in-flight steps but committed state survives via Docker volume. This makes both requirements compatible without an external store. Open Question #3 is resolved: session state is persisted to local disk (SQLite) within the container, with a Docker volume mount for durability across restarts. |
 
 ## Open Questions
 
 1. Should the server support multiple deployment models (single-tenant per repo vs. multi-tenant across repos) from day one, or start single-tenant?
 2. How should the server handle GitHub App installation lifecycle events (installed, uninstalled) — automatically register/unregister the target repo?
-3. Should session state be persisted to disk or to an external store (Redis, SQLite, Postgres)?
-4. How are downstream repo owners expected to deploy and manage their own server instance, or is this intended as a central service operated by the project maintainer?
-5. What is the expected event volume per repository (e.g., events per hour) to inform throughput and scaling targets?
+3. How are downstream repo owners expected to deploy and manage their own server instance, or is this intended as a central service operated by the project maintainer?
+4. What is the expected event volume per repository (e.g., events per hour) to inform throughput and scaling targets?
