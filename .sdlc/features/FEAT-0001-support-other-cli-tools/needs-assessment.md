@@ -1,81 +1,85 @@
 ---
 issue: "#18"
-title: "Support other CLI tools"
-status: approved
+title: "Support other harness CLI"
+status: draft
 ---
 
-# Needs Assessment: Support Other CLI Tools
+# Needs Assessment: Support Other Harness CLI
 
 ## Problem Statement
 
-The LLM-Augmented Workflows engine currently hardcodes `opencode` as the sole AI agent runtime for executing skill steps. Users who prefer or are required to use alternative AI CLI tools (Codex CLI, Gemini CLI, Claude Code) cannot use them within the workflow engine, limiting adoption and forcing tool choice rather than enabling it.
+The engine can only invoke `opencode` as its agent step. Users who prefer or require a different AI agent runtime (Codex CLI, Gemini CLI, Claude Code, etc.) must either fork the engine or use the `shell` step, which lacks native outcome/verdict integration — they cannot participate in the label-driven state machine without custom scripting.
 
 ## Stakeholders
 
 | Stakeholder | Role | How they experience the problem |
 |---|---|---|
-| Workflow consumers | user | Must use opencode as the AI runtime even if their team or policy dictates another tool |
-| Project maintainer | admin | Cannot offer the engine to teams with constraints on which AI CLI they can run |
-| Tool-evaluating teams | business | Must commit to opencode before evaluating the engine's value proposition |
+| Flow authors / workflow consumers | User | Cannot select a non-opencode AI runtime as the agent step; must use `shell` steps without verdict routing |
+| Project maintainers | Developer | Must maintain and extend a single-agent architecture; adding runtime-specific features (e.g., model config, timeout handling) is coupled to opencode |
+| Security / compliance | Admin | If an org mandates a specific AI tool (e.g., for data residency or audit), the engine cannot comply without customization |
+| Ops / infrastructure | Admin | Each supported runtime may need different installation, auth, or sandboxing; the current uniform install (curl + bash) assumes opencode |
 
 ## Evidence of Need
 
 | Source | What it shows | Strength |
 |---|---|---|
-| Issue #18 (single feature request) | Lists "Codex, OpenCode, Gemini, etc." as desired CLI tool support | Weak |
-| No user requests, support tickets, or usage data | No demonstrated demand beyond the issue author | None |
+| Issue #18 (this issue) | Lists three CLIs but provides no use case, user stories, or supporting data | Weak |
+| GitHub issues / discussions | No other user requests or support tickets for multi-runtime support found | None |
+| Competitive analysis | Similar workflow engines (e.g., Probot, StackStorm) support plugin-based executors; not having this limits parity | Moderate |
+| Usage data | No data available on users switching away due to missing runtime support | None |
 
 **Evidence rating:** Weak
 
-The need is assumed rather than demonstrated. The single brief issue lists tool names without describing specific pain, use cases, or adoption barriers. No evidence exists that users are blocked or that the lack of multi-tool support has caused anyone to abandon the project.
+The need is assumed rather than demonstrated. There is no data showing users are blocked or that adoption is limited by single-runtime support. The competitive analysis angle suggests directional value, not current demand.
 
 ## Cost of Inaction
 
 | Aspect | Impact |
 |---|---|
 | What breaks or degrades today | Nothing breaks. The engine works correctly with opencode. |
-| Existing workarounds | Users can run arbitrary CLI tools via `shell` steps in the pipeline, at the cost of losing native verdict/outcome integration. |
-| Trend | Growing -- more AI CLI tools are emerging, so the limitation may become more salient over time. |
+| Existing workarounds | Users can invoke other CLIs via the `shell` step (e.g., `shell: codex -f prompt.txt`). This bypasses the outcome/verdict system — the engine cannot route on the agent's verdict, relabel, or close issues based on the result. Every rule using a non-opencode agent must reimplement verdict routing in shell scripts. |
+| Trend | Stable. No evidence that demand is growing or that users are churning. |
 
 **Cost-of-inaction rating:** Weak
 
-The status quo is fully functional. No reports of significant pain or lost adoption due to the single-runtime constraint.
+The status quo is tolerable. Workarounds exist at a moderate ergonomic cost (lost verdict integration), but no operational or user-facing degradation is occurring.
 
 ## Alternative Paths
 
 | Alternative | How it addresses the need | Trade-offs |
 |---|---|---|
-| Shell steps for other tools | Users can invoke any CLI via `shell` steps in `flows.yml` | No native verdict parsing, no outcome integration, no skill abstraction. Requires manual glue code. |
-| Document multi-tool integration | Explain how to wrap alternative CLIs in shell steps with custom outcome handling | Same trade-offs as shell steps, plus documentation maintenance cost. |
+| Document shell-step pattern for other CLIs | Shows users how to run any CLI via `shell` steps and parse its output into labels/comments manually | No native verdict routing; each flow reimplements the same boilerplate; no support matrix or lifecycle management |
+| Plugin/extension model for agent executors | A future architecture change could make the agent step pluggable | Higher up-front investment; speculative without evidence of demand |
+| Third-party tool (e.g., n8n, Temporal) | These platforms support multiple AI executors natively | Complete platform migration; not proportional to the stated need |
 
 **Could the need be met without new code?** Partially
 
-Shell steps already allow running any CLI tool. The gap is the loss of structured verdict/outcome integration that the `opencode` agent step provides. New code would be needed to abstract the agent step behind a generic interface that supports multiple CLI runtimes with consistent output handling.
+The `shell` step can run any CLI today. The missing piece is native outcome/verdict integration for non-opencode runtimes. A documentation-only change would address the "I want to use Tool X" use case but not the "I want Tool X to participate in the label state machine" use case.
 
 ## Strategic Alignment
 
 | Criterion | Assessment |
 |---|---|
-| Aligns with project goals | Partially -- the project aims to provide a flexible automation engine, but multi-tool support is not an explicit goal |
-| Serves core or edge use case | Edge -- the agent step is core, but swapping the runtime is an operational concern, not a functional one |
-| Dependency enabler | Unblocks 0 other features; no downstream feature depends on this |
+| Aligns with project goals | Partially — the project's stated goal is a "config-driven automation engine." Being tool-agnostic aligns with broad adoption, but the engine is explicitly described as "powered by opencode" and the current design assumes a single agent runtime. No project-overview.md exists in `.sdlc/context/`; goals are inferred from README. |
+| Serves core or edge use case | Edge — the core use case (trigger opencode skills via GitHub events) works fully today. Multi-runtime support extends this to adjacent workflows. |
+| Dependency enabler | Unblocks 0 other features. No downstream phase in the SDLC pipeline requires multi-runtime support. |
 
-**Alignment rating:** Moderate
+**Alignment rating:** Weak
 
-Broadening runtime support could increase adoption but the project's primary value (config-driven pipeline, state machine, outcome handling) does not depend on which AI CLI executes the skill.
+The feature is tangentially aligned. It broadens the engine's addressable audience but does not advance the current stated purpose (driving opencode-based SDLC workflows).
 
 ## Verdict
 
 **Overall needs assessment:** Nice-to-have
 
-**Rationale:** The request addresses a legitimate flexibility gap but the evidence of need is weak (single brief issue, no usage data or user demand), the cost of inaction is low (shell steps provide a partial workaround), and strategic alignment is moderate. The feature would improve adoption breadth but is not essential for the engine's core value proposition.
+**Rationale:** The request to support multiple AI agent runtimes has intuitive appeal (tool flexibility, future-proofing) but lacks demonstrated demand, usage data, or a clear cost of inaction. The existing `shell` step provides a partial workaround at the cost of verdict integration. Without evidence that users are blocked or that adoption is limited, investing in multi-runtime support is premature. The need should be revisited when user demand materializes (support tickets, lost deals, explicit requests from downstream consumers).
 
 ## Conditions to Proceed
 
-- Evidence of demand from multiple users or teams requesting specific alternative CLI tools.
+- Evidence of demand from at least 2 external users or teams (e.g., GitHub issues, support tickets, community discussion) within a 3-month window, demonstrating that the `shell` workaround is insufficient or that a specific runtime is required by organizational policy.
 
 ## Open Questions
 
-1. Which specific CLI tools (beyond opencode) are most requested, and what are their runtime requirements (installation, permissions, output format)?
-2. Is there actual user demand beyond the issue author, or is this a speculative enhancement?
-3. What is the engineering effort to abstract the agent step vs. the expected adoption benefit?
+1. Which specific CLI(s) beyond opencode are users requesting, and what workflow do they need them for?
+2. What is the minimum integration surface for a "supported runtime" — is a configurable `agent.command` template sufficient, or does each runtime need custom lifecycle management (install, auth, timeout, verdict parsing)?
+3. Does the project want to be a polyglot agent runtime orchestrator, or should it remain an opencode-specific engine with a `shell` escape hatch?
