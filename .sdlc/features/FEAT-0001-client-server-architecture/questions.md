@@ -12,3 +12,4 @@ source: needs-assessment.md
 ## Resolved
 
 - Session state persistence (was Q3 in requirements): resolved to local disk (SQLite) with Docker volume mount, per conflict resolution in requirements.md.
+- **Env var racing for concurrent multi-repo execution (codebase-analysis Q1):** The analysis identifies this risk but does not resolve it. The server must choose one of: (a) use thread-local storage to isolate env per repo, (b) refactor leaf modules to accept tokens as parameters, or (c) restrict to single-threaded per-repo execution. This must be resolved before implementation.
