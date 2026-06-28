@@ -2,7 +2,7 @@
 issue: "#16"
 title: "Client/Server architecture"
 status: in-review
-revision: 5
+revision: 6
 ---
 
 # Specification: Client/Server architecture
@@ -89,11 +89,20 @@ The `gh_token` field stores sensitive GitHub credentials. At rest, the value is 
 - `contents:write` — create commits and push branches (for automated fix branches)
 - `metadata:read` — read repository metadata (always included with any fine-grained token)
 
-**Key rotation procedure:** To rotate the encryption key, the operator provides both `TOKEN_ENCRYPTION_KEY_OLD` (the current key) and `TOKEN_ENCRYPTION_KEY` (the new key) as environment variables at startup. The server reads every token from the database, decrypts with `TOKEN_ENCRYPTION_KEY_OLD`, re-encrypts with `TOKEN_ENCRYPTION_KEY`, and writes the updated ciphertext. After a successful rotation, `TOKEN_ENCRYPTION_KEY_OLD` is unset and only `TOKEN_ENCRYPTION_KEY` is retained. If `TOKEN_ENCRYPTION_KEY_OLD` is not set (absent from the environment, not empty), a normal startup proceeds (existing tokens are decrypted with `TOKEN_ENCRYPTION_KEY`).
+**Key rotation procedure:** To rotate the encryption key, the operator provides both `TOKEN_ENCRYPTION_KEY_OLD` (the current key) and `TOKEN_ENCRYPTION_KEY` (the new key) as environment variables on the next restart. The server reads every token from the database, decrypts with `TOKEN_ENCRYPTION_KEY_OLD`, re-encrypts with `TOKEN_ENCRYPTION_KEY`, and writes the updated ciphertext. After a successful rotation, the operator removes `TOKEN_ENCRYPTION_KEY_OLD` from the deployment environment and restarts the server; `TOKEN_ENCRYPTION_KEY` alone is retained going forward. If `TOKEN_ENCRYPTION_KEY_OLD` is not set (absent from the environment, not an empty string), a normal startup proceeds (existing tokens are decrypted with `TOKEN_ENCRYPTION_KEY`).
 
 **Bulk token re-encryption behavior:** Re-encryption at startup processes rows in batches of 100, logging progress after each batch (e.g., `"Re-encrypted 800/1200 tokens"`). A per-row error (e.g., corrupt ciphertext) logs the row ID and skips that row; the server continues startup without failing. The entire re-encryption is subject to a startup timeout of 30 seconds (configurable via `TOKEN_ENCRYPTION_TIMEOUT_SECONDS`). If the timeout is reached before all rows are processed, the server logs the count of remaining rows, skips re-encryption for those rows (existing tokens remain decryptable by `TOKEN_ENCRYPTION_KEY_OLD`), and proceeds to serve requests. A separate maintenance command (`llmaw-admin reencrypt-tokens`) can be invoked at runtime to complete the remaining rows without a restart.
 
 **Migration from plaintext to encryption:** When `TOKEN_ENCRYPTION_KEY` is first set after a period of running without it, the server re-encrypts all plaintext tokens on startup. A separate offline tool (`llmaw-admin decrypt-tokens`) is provided for development and disaster recovery scenarios that require plaintext tokens. This command must be run against a stopped server instance and logs a warning before proceeding. Production deployments should always set `TOKEN_ENCRYPTION_KEY`.
+
+**GitHub App installation token refresh:** The `gh_token` field stores a GitHub App installation access token, a PAT, or a GitHub App user access token. Installation access tokens issued by GitHub Apps expire 1 hour after creation. To handle this, the server runs a background token refresh process on a per-repository schedule. For each repository:
+1. The server stores the `gh_token` along with an `auth_type` field (values: `"installation"`, `"pat"`, `"user_token"`) in the `repositories.metadata` JSON column, along with the token's expiry timestamp (`gh_token_expires_at`) and the GitHub App's `app_id` and `installation_id` for refresh-capable tokens.
+2. A background refresh task runs every 5 minutes, querying all repositories whose `gh_token_expires_at` is within the next 10 minutes (or is already expired).
+3. For each such repository with `auth_type: "installation"`, the server generates a new JWT signed with the app's private key (loaded from a mounted file at `GITHUB_APP_PRIVATE_KEY_PATH`, default `/etc/llmaw/github-app.pem`, or from the `GITHUB_APP_PRIVATE_KEY` environment variable), exchanges it for a fresh installation access token via `POST /app/installations/{installation_id}/access_tokens`, and updates `gh_token` and `gh_token_expires_at` in the database.
+4. For `auth_type: "pat"`, the token does not expire automatically; no refresh is needed. The server sends a warning log if a PAT-bearing repository's token is approaching known expiry (set via `PAT_EXPIRY_WARNING_DAYS` environment variable, default 7 days before the token's `gh_token_expires_at`). PATs store their known expiry in `gh_token_expires_at` and `auth_type: "pat"`.
+5. For `auth_type: "user_token"`, GitHub App user tokens expire after 8 hours. The same refresh flow applies as installation tokens but uses the user token refresh endpoint.
+6. If token refresh fails (network error, GitHub API error), the task logs the failure and increments a `metadata.refresh_failure_count` counter for that repository. After 3 consecutive failures, the repository's `active` flag is set to `false` and an error is logged. An admin must investigate and re-enable via `PATCH /admin/repositories/{owner}/{repo}`.
+7. The `gh_token_expires_at` value and `auth_type` are accepted as optional fields in `POST /admin/repositories` and `PATCH /admin/repositories/{owner}/{repo}`. If not provided on registration, `auth_type` defaults to `"pat"` and `gh_token_expires_at` is set to `null` (never expires). The server never exposes `gh_token` or `gh_token_expires_at` in API responses.
 
 Consumers must ignore unknown fields in response payloads. The `metadata` column exists for forward-compatible addition of backend-specific configuration without schema migration.
 
@@ -122,7 +131,7 @@ The `conversation_history` field stores the agent's conversation as a JSON array
 
 **Foreign key behavior:** The `repo_id` foreign key from `sessions` references `repositories.id` with `ON DELETE CASCADE` — when a repository is deregistered, its sessions are deleted automatically. The `webhook_events` table also has `ON DELETE CASCADE` from `repo_id` to `repositories.id`. This ensures no orphaned data remains after deregistration and keeps the session reaper's query logic simple (it only needs a `updated_at` filter).
 
-**Session expiry and cleanup:** Sessions expire after 7 days of inactivity (no new webhook events for that `(repo_id, subject_type, subject_id)` key). Expiry is checked at every session load: before returning a session, the server compares `updated_at` against `SESSION_TTL_HOURS` (configurable, default 168). If the session has expired, a fresh empty session is created and the stale row is deleted. This load-time check is independent of the background reaper, which runs every hour and deletes all rows whose `updated_at` is older than the TTL. The reaper logs its deletion count and skips if database contention is detected (SQLITE_BUSY). Session count is tracked in the `/health` endpoint as active (non-expired) sessions. The `SESSIONS_MAX_AGE_HOURS` environment variable overrides the default TTL.
+**Session expiry and cleanup:** Sessions expire after 7 days of inactivity (no new webhook events for that `(repo_id, subject_type, subject_id)` key). Expiry is checked at every session load: before returning a session, the server compares `updated_at` against the configured TTL (default 168 hours = 7 days). If the session has expired, a fresh empty session is created and the stale row is deleted. This load-time check is independent of the background reaper, which runs every hour and deletes all rows whose `updated_at` is older than the TTL. The reaper logs its deletion count and skips if database contention is detected (SQLITE_BUSY). Session count is tracked in the `/health` endpoint as active (non-expired) sessions. The `SESSIONS_MAX_AGE_HOURS` environment variable overrides the default TTL.
 
 **Version change behavior:** When a repository's `version` is changed, existing sessions are NOT automatically reset — the existing conversation history and context may contain fields or formats from the previous version's configuration. The v1 config bundle tolerates unknown JSON fields in `conversation_history` and `context` (per the forward-compatibility policy). If a version rollback produces incompatible session data, the operator should deregister and re-register the repository, or manually delete the session rows in SQLite. A future version may add an admin endpoint to reset sessions on version change.
 
@@ -359,7 +368,8 @@ The request body is JSON. Unknown fields are accepted and stored in `repositorie
     "repo": "my-repo",
     "active": true,
     "version": "v1",
-    "created_at": "2026-06-28T00:00:00Z"
+    "created_at": "2026-06-28T00:00:00Z",
+    "updated_at": "2026-06-28T00:00:00Z"
   }
 }
 ```
@@ -428,7 +438,8 @@ Unknown fields are accepted and stored in `repositories.metadata` for forward co
     "repo": "my-repo",
     "active": true,
     "version": "v1",
-    "created_at": "2026-06-28T00:00:00Z"
+    "created_at": "2026-06-28T00:00:00Z",
+    "updated_at": "2026-06-28T01:00:00Z"
   }
 }
 ```
@@ -456,7 +467,8 @@ List all registered repositories. Requires admin authentication.
       "repo": "my-repo",
       "active": true,
       "version": "v1",
-      "created_at": "2026-06-28T00:00:00Z"
+      "created_at": "2026-06-28T00:00:00Z",
+      "updated_at": "2026-06-28T01:00:00Z"
     }
   ],
   "total": 1
@@ -485,7 +497,8 @@ Retrieve a single registered repository's current configuration. Requires admin 
     "repo": "my-repo",
     "active": true,
     "version": "v1",
-    "created_at": "2026-06-28T00:00:00Z"
+    "created_at": "2026-06-28T00:00:00Z",
+    "updated_at": "2026-06-28T01:00:00Z"
   }
 }
 ```
@@ -554,6 +567,7 @@ List webhook events with optional filtering by `repo_id` and `status`.
       "delivery_id": "abc-123",
       "event_type": "push",
       "status": "completed",
+      "error": null,
       "created_at": "2026-06-28T00:00:00Z"
     }
   ],
@@ -561,7 +575,7 @@ List webhook events with optional filtering by `repo_id` and `status`.
 }
 ```
 
-The `payload` column is excluded from list responses to reduce response size. Consumers must ignore unknown fields in each event object.
+The `payload` column is excluded from list responses to reduce response size. The `error` field is included when non-null. Consumers must ignore unknown fields in each event object.
 
 **Error Responses**
 
@@ -695,6 +709,24 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 | API versioning | URL prefix-based (`/v1/webhook`, `/v1/admin/repositories`). Additive-only within a major version. Breaking changes require a new major version with a documented deprecation window. | All endpoints are versioned via URL prefix. Future major versions (e.g., `/v2/webhook`) may change behavior. The current `/webhook`, `/health`, and `/admin/*` paths are aliases for `/v1/*`. The health response exposes `api_version` (the API contract version, e.g., `"v1"`). Deprecation window: at least one minor release cycle between announcement and removal of a deprecated version. New optional fields can be added at any minor version without a deprecation period. |
 | Forward compatibility | Open enums, unknown field tolerance, additive-only contract | All schemas document that consumers must ignore unknown fields. Enum values that are not recognized must be handled without error. New fields are always optional. API version is the `api_version` field in the health response and `repositories.version` for canary deployments. New enum values are additive only; no existing enum value is removed without a major version bump and a deprecation window of at least one release cycle. |
 
+## Service Level Targets
+
+The following targets define the expected service level for a single-container deployment. These are aspirational targets, not contractual SLAs, and apply when the server is deployed behind a TLS-terminating reverse proxy with a Docker volume for SQLite persistence.
+
+| Target | Value | Measurement |
+|---|---|---|
+| Availability (process uptime) | 99.5% | Uptime percentage measured over a rolling 30-day window. Does not include planned maintenance (documented restarts for config changes, version upgrades). |
+| Webhook dispatch latency (p99) | 5 seconds (excluding LLM inference) | Measured from HTTP request receipt to pipeline invocation (as logged in `webhook_events` with `status: processing`). |
+| Webhook dispatch latency (p50) | 1 second | Same measurement point as p99. |
+| Session persistence durability | At-most-once for committed state | Committed session state (written to SQLite) survives process crash on the same host with the same Docker volume. In-flight agent state (mid-execution) is lost on crash. |
+| Maximum concurrent repositories | 10 | Number of registered repositories with `active=true`. |
+| Maximum event throughput | 10 events/second aggregate | Sustained event rate across all repositories. |
+| Recovery time objective (RTO) | 5 minutes | Time from process crash (or container restart) to accepting webhook requests, assuming the same Docker volume. |
+| Recovery point objective (RPO) | 0 (committed state) | No committed session state is lost on restart. In-flight agent execution state may be lost (acceptable per NFR-05). |
+| Graceful shutdown drain timeout | 30 seconds | Maximum time the server waits for in-flight executions to complete after SIGTERM before forcibly cancelling remaining tasks and exiting. |
+
+**Maintenance window policy:** Restarts for configuration changes (new `versions.yaml`, env var changes, Docker image updates) do not have a fixed maintenance window because graceful shutdown ensures no webhooks are dropped (new deliveries are queued by GitHub's retry mechanism). The operator should restart during low-traffic hours when possible. Upgrades that change the SQLite schema are applied at startup via migration files and are expected to complete in under 1 second for the target load.
+
 ## Risks and Unknowns
 
 1. **SQLite write contention under load**: At 10 repos with ~1 event/sec each, SQLite's single-writer may become a bottleneck. Mitigation: a per-session `threading.Lock` (keyed by `(repo_id, subject_type, subject_id)`) serializes writes within each session. The lock is acquired in the thread pool worker before any SQLite write and released after the write completes. `threading.Lock` is safe across the `run_in_executor` thread pool boundary, unlike `asyncio.Lock`. This allows concurrent writes across different sessions while preventing write interleaving within a single session's conversation history. Escalation path: migration to PostgreSQL (schema-compatible change).
@@ -704,7 +736,7 @@ Pipeline Bridge          run_steps._gh_with_retry     gh CLI              GitHub
 5. **Behavioral identity verification**: The refactored pipeline must produce identical outcomes for the same input as the CLI path. Mitigation: run the acceptance criteria suite against both paths in CI before deploying the server.
 6. **GitHub API rate limits**: All outbound GitHub API calls share the per-repository token. Rate limit exhaustion blocks agent outcomes. Mitigation: retry with backoff (NFR-06); log rate-limit headers for monitoring.
 7. **No TLS termination in the server**: The server listens on HTTP only. TLS termination is expected to be handled by a reverse proxy (nginx, Caddy, or a cloud load balancer) deployed in front of the container. **Deployment guidance**: the reverse proxy must support HTTP/1.1 (for GitHub webhook delivery) and should be configured with a TLS certificate from Let's Encrypt or a commercial CA. Health checks from the load balancer should target `GET /health` on the HTTP port. The server exposes `PORT` (default 8080) as the listen address.
-8. **Session table unbounded growth**: Without a reaper, the `sessions` table grows indefinitely. Mitigation: background reaper deletes sessions older than `SESSION_TTL_HOURS` (default 168, i.e., 7 days). The reaper runs every hour and logs its deletion count.
+8. **Session table unbounded growth**: Without a reaper, the `sessions` table grows indefinitely. Mitigation: background reaper deletes sessions older than the configured TTL (default 168 hours, i.e., 7 days, configurable via `SESSIONS_MAX_AGE_HOURS`). The reaper runs every hour and logs its deletion count.
 9. **Webhook events table unbounded growth**: Without a retention policy, the `webhook_events` table grows indefinitely. Mitigation: daily cleanup task deletes rows older than `EVENTS_RETENTION_DAYS` (default 90). Both retention and reaper tasks use SQL with LIMIT to avoid long-running transactions.
 10. **Admin token rotation disruption**: Restarting with a new `ADMIN_TOKEN` invalidates all existing admin sessions at once. Mitigation: support `ADMIN_TOKEN_OLD` for a transition window, giving operators time to update clients.
 
