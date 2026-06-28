@@ -1,7 +1,7 @@
 ---
 issue: "#18"
 title: "Support other harness CLI"
-status: draft
+status: approved
 ---
 
 # Requirements: Support Other Harness CLI
@@ -29,9 +29,9 @@ The engine currently hardcodes `opencode` as the only AI agent runtime for the `
 | FR-04 | Must | The system shall provide a pre-install hook per runtime (e.g., `agent.setup` script) that runs before the agent step to install or verify the CLI. |
 | FR-05 | Should | The system shall include built-in verdict parsers for Codex CLI and Gemini CLI, documented with their supported output formats. |
 | FR-06 | Should | The system shall validate the configured `agent.command` exists and is executable before running the agent step, with a clear error message if not. |
-| FR-07 | Should | The system shall support runtime-specific environment variables (e.g., API keys, model selection) passed via step configuration. |
+| FR-07 | Should | The system shall support runtime-specific environment variables (e.g., API keys, model selection) mapped from a configurable `agent.env` map in step configuration, where each key-value pair is set as an environment variable in the agent subprocess. |
 | FR-08 | May | The system shall include a `--list-runtimes` flag on the engine CLI that shows registered CLIs and their parser status. |
-| FR-09 | May | The system shall allow verdict parsers to be distributed as separate packages or loaded from a well-known path. |
+| FR-09 | May | The system shall allow verdict parsers to be distributed as separate packages or loaded from a configurable `parsers.path` directory (default `~/.config/opencode/parsers/`). |
 
 ## Non-Functional Requirements
 
@@ -48,6 +48,7 @@ The engine currently hardcodes `opencode` as the only AI agent runtime for the `
 - No changes to the `shell` step type; it continues to exist as an alternative.
 - Verdict parsers must not require root or elevated privileges.
 - The engine must not ship proprietary or licensed CLIs; users install their chosen runtime independently.
+- Verdict convention: verdict parsers communicate their result via exit code — exit 0 = `approved`, exit 1 = `changes-requested`, exit 2+ (or non-zero) = `rejected` / error. This convention applies to built-in parsers and is the minimum contract for custom parsers.
 
 ## Acceptance Criteria
 
@@ -87,6 +88,26 @@ The engine currently hardcodes `opencode` as the only AI agent runtime for the `
     - **Given** a workflow with `agent.command` set to a CLI that hangs
     - **When** the agent step runs past the configured timeout
     - **Then** the engine kills the subprocess and reports a timeout error
+- [ ] **FR-07** (env vars)
+    - **Given** a workflow with `agent.command: "codex"` and `agent.env: { API_KEY: "sk-xxx", MODEL: "claude-3-5" }`
+    - **When** the agent step runs
+    - **Then** the `API_KEY` and `MODEL` environment variables are set in the agent subprocess
+- [ ] **FR-08** (list runtimes)
+    - **Given** the engine CLI
+    - **When** the user runs `engine --list-runtimes`
+    - **Then** the output lists each registered runtime with its parser status (built-in, custom, or none)
+- [ ] **FR-09** (distributable parser)
+    - **Given** a parser script placed at `~/.config/opencode/parsers/codex-parser`
+    - **When** `agent.command: "codex"` is used with no explicit `verdict_parser`
+    - **Then** the engine discovers and loads the parser from the default parsers path
+- [ ] **NFR-02** (no regression)
+    - **Given** an existing workflow with no `agent.command` and no `agent.verdict_parser`
+    - **When** the agent step runs
+    - **Then** the output, exit codes, and verdict routing match the pre-feature behavior exactly
+- [ ] **NFR-04** (logging)
+    - **Given** a workflow with `agent.command: "codex"`
+    - **When** the agent step runs
+    - **Then** the engine logs the configured command at DEBUG before execution and the exit code at DEBUG after execution
 - [ ] **NFR-03** (sandbox)
     - **Given** a workflow with a custom `agent.verdict_parser` that attempts network access
     - **When** the verdict parser runs
@@ -104,3 +125,5 @@ None identified yet.
 2. What is the minimum supported interface for a verdict parser — does it receive stdin only, or also env vars with step metadata?
 3. How should the engine discover built-in parsers for runtimes that are not installed at engine start (e.g., a parser registered by a third-party package)?
 4. What is the upgrade/migration path for existing workflows that use `shell:` to simulate agent steps today?
+5. Should the engine support an admin-enforced allowlist of approved `agent.command` values to satisfy the security/compliance stakeholder requirement to "mandate a specific approved AI tool"?
+6. Should per-runtime sandbox configuration be supported (e.g., some runtimes need network access, others do not), or is the single global NFR-03 setting sufficient?
