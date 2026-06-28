@@ -94,10 +94,24 @@ A post-agent step. The skill, as its final action, writes a YAML file to the pat
 ```yaml
 # $OUTCOME_YAML
 verdict: approved        # the value the cases below switch on
-reason: ...
+reason: ...              # required, overrides the action's hardcoded comment
 ```
 
 `on_outcome` maps each `verdict` value to an action. The optional `_` key is the fallback when no case matches. An action may carry a `labels` operation (same `{add, remove, target: subject | linked-issue}` shape as a `labels` step), `close` the subject, and/or post a `comment`.
+
+An action opts in to the skill's feedback with `post_reason: true`. When set, the outcome's `reason` is posted instead of the action's hardcoded `comment` (which becomes a fallback for when the skill wrote none). Without `post_reason`, the action posts only its hardcoded `comment` and the `reason` is not surfaced.
+
+```yaml
+run:
+  - skill: create-needs-assessment
+  - on_outcome:
+      approved:   { labels: { add: [llmaw:needs-approved] } }
+      rejected:   { close: true, comment: "Closing as wontfix.", post_reason: true }
+      needs-info: { comment: "Need more info.", post_reason: true }
+      _:          { comment: "No verdict produced; needs review." }
+```
+
+In this example the `approved` action stays silent, `rejected`/`needs-info` post the skill's context-specific `reason` (falling back to the hardcoded text), and the `_` fallback uses its hardcoded comment (the skill produced no usable reason).
 
 ```yaml
 run:
@@ -112,6 +126,7 @@ run:
 Rules:
 
 - `on_outcome` must follow the agent step and reads `$OUTCOME_YAML` from the same run.
+- Both `verdict` and `reason` are required. A missing `reason` triggers the continuation (the model is asked once to write a complete outcome).
 - A missing/invalid outcome file yields `verdict: unknown`; only the `_` case (if any) applies.
 - If the skill writes no outcome, the engine resumes its opencode session once (`opencode run --continue`) and asks the model to write `$OUTCOME_YAML` before applying the fallback above. This only fires when `$OUTCOME_YAML` is set and the rule has an `on_outcome`.
 - At least one verdict case (besides `_`) is required.

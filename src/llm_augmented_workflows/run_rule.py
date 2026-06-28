@@ -82,17 +82,19 @@ def _run_agent(agent: dict) -> None:
 def _continue_for_outcome(agent: dict, on_outcome: dict) -> None:
     """Resume the agent's opencode session and ask it to emit an outcome.
 
-    Runs when a rule expects an outcome but the skill wrote none, giving the
-    model one chance to produce ``$OUTCOME_YAML`` before apply_outcome falls
-    back to the default/notice path. ``--continue`` resumes the last session
-    in this working directory (the skill's own session).
+    Runs when a rule expects an outcome but the skill wrote none or omitted the
+    required ``reason``, giving the model one chance to produce a complete
+    ``$OUTCOME_YAML`` before apply_outcome falls back to the default/notice
+    path. ``--continue`` resumes the last session in this working directory
+    (the skill's own session).
     """
     path = os.environ["OUTCOME_YAML"]
     verdicts = sorted((on_outcome.get("cases") or {}).keys())
     hint = f" (one of: {', '.join(verdicts)})" if verdicts else ""
     prompt = (
-        f"You did not write an outcome file. Write YAML to {path} now with a "
-        f"`verdict` key{hint}, e.g. `verdict: approved`."
+        f"Your outcome file is missing or incomplete. Write YAML to {path} now "
+        f"with a `verdict` key{hint}, e.g. `verdict: approved`, and a `reason` "
+        f"key with context-specific feedback to post on the issue. Both are required."
     )
     cmd = [
         "opencode",

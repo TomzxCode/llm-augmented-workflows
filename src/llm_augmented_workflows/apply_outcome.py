@@ -6,6 +6,10 @@ the agent's outcome from ``OUTCOME_YAML`` (a YAML file the skill wrote). Selects
 the action for ``outcome.verdict`` (falling back to the ``_`` default) and
 applies its labels / close / comment to the subject (or linked issue).
 
+When posting a comment (standalone or on close), a ``reason`` field in the
+outcome YAML takes precedence over the action's hardcoded ``comment``, so the
+skill's context-specific feedback reaches GitHub instead of a generic string.
+
 GitHub mutations use ``gh`` with ``GH_TOKEN``, the same contract as
 ``run_steps.py``. Reuses ``run_steps`` helpers so label/close behavior stays
 consistent.
@@ -43,8 +47,9 @@ def _read_outcome() -> dict:
 
 
 def outcome_present() -> bool:
-    """True if ``$OUTCOME_YAML`` exists and declares a ``verdict``."""
-    return bool(_read_outcome().get("verdict"))
+    """True if ``$OUTCOME_YAML`` exists and declares both ``verdict`` and ``reason``."""
+    outcome = _read_outcome()
+    return bool(outcome.get("verdict") and outcome.get("reason"))
 
 
 def _run_url() -> str | None:
@@ -105,10 +110,17 @@ def apply(on_outcome: dict, rule_id: str = "") -> int:
     if number is None:
         log.warning("no subject (ISSUE_NUMBER/PR_NUMBER unset); close/comment skipped")
         return 0
+
+    # When the action opts in with ``post_reason``, the skill's context-specific
+    # reason is posted instead of the action's hardcoded fallback comment.
+    if action.get("post_reason"):
+        comment = outcome.get("reason") or action.get("comment")
+    else:
+        comment = action.get("comment")
     if action.get("close"):
-        _close(number, kind, action.get("comment"))
-    elif action.get("comment"):
-        _post_comment(number, kind, action["comment"])
+        _close(number, kind, comment)
+    elif comment:
+        _post_comment(number, kind, comment)
 
     return 0
 
