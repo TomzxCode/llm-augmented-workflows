@@ -1,7 +1,7 @@
 ---
 issue: "#17"
 title: "Implement directly from issue"
-status: draft
+status: approved
 ---
 
 # Requirements: Implement directly from issue
@@ -24,7 +24,7 @@ The full 14+ phase SDLC pipeline (triage, needs, requirements, existing-solution
 | ID | Priority | Requirement |
 |---|---|---|
 | FR-01 | Must | The system shall classify a feature as eligible or ineligible for the express path based on configurable criteria |
-| FR-02 | Must | The system shall produce a minimal implementation from an eligible issue without running the planning phases (requirements, existing-solutions, codebase-analysis, feasibility, specifications, telemetry, observability, plan, tasks) |
+| FR-02 | Must | The system shall produce an implementation from an eligible issue without running the planning phases (requirements, existing-solutions, codebase-analysis, feasibility, specifications, telemetry, observability, plan, tasks) |
 | FR-03 | Must | The system shall produce a minimal artifact trail for every express-path feature (at minimum: an artifact recording that the express path was used and why) |
 | FR-04 | Must | The system shall fall back to the full SDLC pipeline when a feature is classified as ineligible for the express path |
 | FR-05 | Should | The system shall log the classification decision and rationale to the issue or a corresponding artifact |
@@ -39,6 +39,7 @@ The full 14+ phase SDLC pipeline (triage, needs, requirements, existing-solution
 | NFR-02 | The express path shall not reduce code quality below the standard of the full pipeline; implementations must still pass normal CI checks | Quality |
 | NFR-03 | The classification logic shall be configurable without code changes (e.g., via flows.yml or project settings) | Maintainability |
 | NFR-04 | The express path must not break existing full-pipeline features; the two paths operate orthogonally | Compatibility |
+| NFR-05 | The classification logic shall reject attempts to spoof eligibility via label manipulation on issues that do not meet the configured criteria | Security |
 
 ## Constraints
 
@@ -65,6 +66,10 @@ The full 14+ phase SDLC pipeline (triage, needs, requirements, existing-solution
     - **Given** a classified-eligible issue with a clear scope
     - **When** the express path runs
     - **Then** a PR is created with the implementation code (or a clear explanation of why automatic implementation is infeasible)
+- [ ] **FR-02** (execution failure)
+    - **Given** a classified-eligible issue
+    - **When** the express path encounters an error during implementation
+    - **Then** the error is reported to the issue with details, and no automatic fallback to the full pipeline occurs
 - [ ] **FR-02** (no planning artifacts)
     - **Given** an eligible issue processed through the express path
     - **When** execution completes
@@ -89,6 +94,14 @@ The full 14+ phase SDLC pipeline (triage, needs, requirements, existing-solution
     - **Given** an ineligible issue
     - **When** a human adds the express-path label
     - **Then** the issue is routed to the express path on the next cycle
+- [ ] **FR-07** (metrics reporting)
+    - **Given** at least one feature has been processed through the express path
+    - **When** metrics are queried
+    - **Then** the response includes the count of express-path features and the average implementation time
+- [ ] **FR-07** (classification breakdown)
+    - **Given** at least one issue has been classified as eligible and one as ineligible
+    - **When** metrics are queried
+    - **Then** the response includes a breakdown of classifications
 
 ## Conflicts
 
@@ -100,5 +113,4 @@ None identified yet.
 
 1. What exactly qualifies as a "simple feature"? Should it be defined by label presence, issue body length, change scope (single file vs. multi-file), or a combination?
 2. Should the express path produce a plan artifact that simply states "fast path: plan skipped"? Or should it produce zero artifacts (relying entirely on the PR description)?
-3. What should happen if the express path runs but fails to produce a valid implementation? Should it fall back to the full pipeline or report a failure?
-4. How should metrics be exposed to the project owner? Via GitHub issue comments, a dashboard, or logs?
+3. How should metrics be exposed to the project owner? Via GitHub issue comments, a dashboard, or logs?
