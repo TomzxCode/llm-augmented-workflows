@@ -38,9 +38,7 @@ def parse_execution(raw: Any) -> str:
     if raw is None:
         return DEFAULT_EXECUTION
     if not isinstance(raw, str):
-        raise ConfigError(
-            f"execution must be a string in {EXECUTION_MODES}, got {raw!r}"
-        )
+        raise ConfigError(f"execution must be a string in {EXECUTION_MODES}, got {raw!r}")
     value = raw.strip().lower()
     if value not in EXECUTION_MODES:
         raise ConfigError(f"execution must be one of {EXECUTION_MODES}, got {raw!r}")

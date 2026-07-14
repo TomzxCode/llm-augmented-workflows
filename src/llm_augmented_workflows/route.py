@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .engine import (
     ConfigError,
+    When,
     flatten_rules,
     load_flows,
     matches,
@@ -35,6 +36,23 @@ def _write_output(name: str, value: str) -> None:
         with open(output_file, "a") as fh:
             fh.write(f"{name}={value}\n")
     print(f"{name}={value}")
+
+
+def _is_label_stale(when: When, event_name: str, payload: dict) -> bool:
+    """Return True if a labeled event's trigger label is no longer on the issue.
+
+    This prevents stale queued dispatch runs (issue #20) from matching rules
+    whose trigger label was already consumed by continuous mode.  Event-driven
+    mode and legitimately re-added labels are unaffected because the label
+    genuinely remains on the issue.
+    """
+    if when.label is None:
+        return False
+    if event_name != "issues" or payload.get("action") != "labeled":
+        return False
+    issue_labels = (payload.get("issue") or {}).get("labels") or []
+    live_labels = {lb["name"] for lb in issue_labels if isinstance(lb, dict)}
+    return when.label not in live_labels
 
 
 def _load_payload() -> dict:
@@ -66,7 +84,12 @@ def main() -> int:
         rules = [r for r in all_rules if r.id == force_id] if force_id else []
     else:
         payload = _load_payload()
-        rules = [r for r in all_rules if matches(r.when, event_name, payload)]
+        rules = [
+            r
+            for r in all_rules
+            if matches(r.when, event_name, payload)
+            and not _is_label_stale(r.when, event_name, payload)
+        ]
 
     matrix = [rule_to_matrix(r) for r in rules]
 

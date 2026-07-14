@@ -206,6 +206,28 @@ def test_matches_unspecified_fields_are_wildcards():
     assert matches(when, "issues", {"action": "opened"})
 
 
+def test_matches_labeled_event_uses_payload_not_live_labels():
+    """matches() keys on the event payload label, not the issue's live labels.
+
+    This is the root cause of the redundant dispatch cascade described in
+    issue #20: a stale queued dispatch run whose trigger label was already
+    consumed by continuous mode still matches because the payload still
+    carries the original label name. matches() has no access to live label
+    state.
+    """
+    when = parse_when(
+        {"event": "issues", "action": "labeled", "label": "llmaw:create-needs-assessment"}
+    )
+    # Payload carries the label that triggered the event (even if it was
+    # later removed by continuous mode before this dispatch run starts).
+    payload = {"action": "labeled", "label": {"name": "llmaw:create-needs-assessment"}}
+    assert matches(when, "issues", payload)
+
+    # matches() returns True even though the label is stale/unchecked
+    # against live state. The responsibility for staleness checking lies
+    # in the caller (route.py), not in the pure matching function.
+
+
 # --------------------------------------------------------------------------- #
 # flatten_rules end to end
 # --------------------------------------------------------------------------- #
@@ -284,9 +306,7 @@ def test_normalize_label_step_rejects_bad_target():
 # normalize_shell_step
 # --------------------------------------------------------------------------- #
 def test_normalize_shell_step_string_form():
-    assert normalize_shell_step({"shell": "s.sh"}) == {
-        "shell": {"run": "s.sh", "args": []}
-    }
+    assert normalize_shell_step({"shell": "s.sh"}) == {"shell": {"run": "s.sh", "args": []}}
 
 
 def test_normalize_shell_step_list_form_with_args():
