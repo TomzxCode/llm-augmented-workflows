@@ -18,8 +18,9 @@ def _capture_gh(monkeypatch, stdout=""):
 
 
 class _Proc:
-    def __init__(self, rc):
+    def __init__(self, rc, stdout=""):
         self.returncode = rc
+        self.stdout = stdout
 
 
 # --------------------------------------------------------------------------- #
@@ -154,14 +155,17 @@ def test_sync_labels_creates_when_absent(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        # First call is the gh label list used for migration planning.
+        if cmd[1:3] == ["label", "list"]:
+            return _Proc(0, stdout="")
         return _Proc(0)
 
     monkeypatch.setattr(github.subprocess, "run", fake_run)
 
     github.GithubCliClient().sync_labels([{"name": "x", "description": "d", "color": "c"}])
 
-    assert len(calls) == 1
-    assert calls[0] == ["gh", "label", "create", "x", "--description", "d", "--color", "c"]
+    creates = [c for c in calls if c[1:3] == ["label", "create"]]
+    assert creates == [["gh", "label", "create", "x", "--description", "d", "--color", "c"]]
 
 
 def test_sync_labels_edits_when_create_fails(monkeypatch):
@@ -169,14 +173,16 @@ def test_sync_labels_edits_when_create_fails(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        return _Proc(1) if len(calls) == 1 else _Proc(0)
+        if cmd[1:3] == ["label", "list"]:
+            return _Proc(0, stdout="")
+        return _Proc(1) if len([c for c in calls if c[1:3] != ["label", "list"]]) == 1 else _Proc(0)
 
     monkeypatch.setattr(github.subprocess, "run", fake_run)
 
     github.GithubCliClient().sync_labels([{"name": "x", "description": "d", "color": "c"}])
 
-    assert len(calls) == 2
-    assert calls[1] == ["gh", "label", "edit", "x", "--description", "d", "--color", "c"]
+    edits = [c for c in calls if c[1:3] == ["label", "edit"]]
+    assert edits == [["gh", "label", "edit", "x", "--description", "d", "--color", "c"]]
 
 
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,13 @@ from pathlib import Path
 
 import yaml
 
-from .base import CanonicalEvent, SubjectRef, parse_linked_issue
+from .base import (
+    CanonicalEvent,
+    SubjectRef,
+    log_migration_conflicts,
+    parse_linked_issue,
+    plan_label_migrations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -106,12 +112,56 @@ class LocalYamlClient:
         return None
 
     def sync_labels(self, defs: list[dict]) -> None:
+        """Migrate declared predecessors, then write the label catalog.
+
+        Migration here rewrites the label name in every subject file (and the
+        catalog) that still carries it, matching the rename semantics of the
+        GitHub tracker.
+        """
+        existing = self._all_label_names()
+        renames, conflicts = plan_label_migrations(defs, existing)
+        rename_map = dict(renames)
+        if rename_map:
+            for path in sorted(self.state_dir.glob("*.yml")):
+                if path.name == LABELS_FILE:
+                    continue
+                data = yaml.safe_load(path.read_text()) or {}
+                if not isinstance(data, dict):
+                    continue
+                labels = data.get("labels") or []
+                if any(item in rename_map for item in labels):
+                    data["labels"] = [rename_map.get(item, item) for item in labels]
+                    tmp = path.with_name(path.name + ".tmp")
+                    tmp.write_text(yaml.safe_dump(data, sort_keys=False))
+                    os.replace(tmp, path)
+            for old, new in renames:
+                log.info("renamed label %s -> %s", old, new)
+        log_migration_conflicts(conflicts, log)
+
+        catalog = [{k: v for k, v in label.items() if k != "migrate_from"} for label in defs]
         path = self.state_dir / LABELS_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(yaml.safe_dump({"labels": defs}, sort_keys=False))
+        tmp.write_text(yaml.safe_dump({"labels": catalog}, sort_keys=False))
         os.replace(tmp, path)
         log.info("wrote label catalog %s (%d labels)", path, len(defs))
+
+    def _all_label_names(self) -> set[str]:
+        """Every label name in play: catalog entries plus subject-file labels."""
+        names: set[str] = set()
+        catalog = self.state_dir / LABELS_FILE
+        if catalog.exists():
+            data = yaml.safe_load(catalog.read_text()) or {}
+            names.update(
+                item["name"] for item in (data.get("labels") or []) if isinstance(item, dict)
+            )
+        for path in self.state_dir.glob("*.yml"):
+            if path.name == LABELS_FILE:
+                continue
+            data = yaml.safe_load(path.read_text()) or {}
+            if isinstance(data, dict):
+                names.update(data.get("labels") or [])
+        return names
 
 
 class CliEventSource:

@@ -14,7 +14,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from .base import CanonicalEvent, SubjectRef, parse_linked_issue
+from .base import (
+    CanonicalEvent,
+    SubjectRef,
+    log_migration_conflicts,
+    parse_linked_issue,
+    plan_label_migrations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,12 +91,38 @@ class GithubCliClient:
         return SubjectRef("issue", number) if number else None
 
     def sync_labels(self, defs: list[dict]) -> None:
+        """Migrate declared predecessors, then create/update each label."""
+        existing = self.list_existing_labels()
+        renames, conflicts = plan_label_migrations(defs, existing)
+        for old, new in renames:
+            self.rename_label(old, new)
+        log_migration_conflicts(conflicts, log)
         for label in defs:
             self._sync_label(
                 name=label["name"],
                 description=label.get("description", ""),
                 color=label.get("color", ""),
             )
+
+    @staticmethod
+    def list_existing_labels() -> set[str]:
+        """Return the set of label names currently in the repo (single gh call)."""
+        proc = _gh(
+            ["label", "list", "--json", "name", "-q", ".[].name", "--limit", "1000"],
+            capture=True,
+        )
+        return {line.strip() for line in proc.splitlines() if line.strip()}
+
+    @staticmethod
+    def rename_label(old: str, new: str) -> None:
+        """Rename ``old`` to ``new`` (carrying issues follow automatically)."""
+        subprocess.run(
+            ["gh", "label", "edit", old, "--name", new],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        log.info("renamed label %s -> %s", old, new)
 
     @staticmethod
     def _sync_label(name: str, description: str, color: str) -> None:

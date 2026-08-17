@@ -12,8 +12,11 @@ adapters used by the ``tracker:`` config in ``flows.yml``.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from ..engine import ConfigError
 
 _LINKED_KEYWORD_RE = re.compile(
     r"(?:closes|fixes|resolves|plan for issue)[^#\n]*#(\d+)", re.IGNORECASE
@@ -88,3 +91,69 @@ class EventSource(Protocol):
     """Produces the canonical event for one dispatch."""
 
     def event(self) -> CanonicalEvent | None: ...
+
+
+# --------------------------------------------------------------------------- #
+# Label migration (pure planning, shared by every tracker client)
+# --------------------------------------------------------------------------- #
+def normalize_migrate_from(value: object) -> list[str]:
+    """Coerce a ``migrate_from`` value into a list of old label names."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        names: list[str] = []
+        for i, item in enumerate(value):
+            if not isinstance(item, str) or not item.strip():
+                raise ConfigError(f"migrate_from entry #{i} must be a non-empty string")
+            names.append(item)
+        return names
+    raise ConfigError("migrate_from must be a string or a list of strings")
+
+
+def plan_label_migrations(
+    declared: list[dict], existing: Iterable[str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Plan label renames for one sync pass.
+
+    Returns ``(renames, conflicts)``. A rename is planned when an old
+    ``migrate_from`` name currently exists but its target name does not; a
+    rename moves every subject carrying the old label onto the new one, so
+    history is preserved. When both the old and new names already exist a
+    rename is impossible, so the pair is returned as a conflict for the caller
+    to surface.
+
+    Planning is sequential within the pass: once a rename creates the target
+    name, any further ``migrate_from`` entries pointing at it become conflicts
+    (those need a subject re-tag plus delete, which is out of scope for
+    rename).
+    """
+    seen: set[str] = set(existing)
+    renames: list[tuple[str, str]] = []
+    conflicts: list[tuple[str, str]] = []
+    for label in declared:
+        new = label["name"]
+        for old in normalize_migrate_from(label.get("migrate_from")):
+            if old not in seen:
+                continue
+            if new in seen:
+                conflicts.append((old, new))
+            else:
+                renames.append((old, new))
+                seen.discard(old)
+                seen.add(new)
+        seen.add(new)
+    return renames, conflicts
+
+
+def log_migration_conflicts(conflicts: list[tuple[str, str]], log) -> None:
+    """Surface rename conflicts as warnings (resolution needs a human)."""
+    for old, new in conflicts:
+        log.warning(
+            "cannot rename %s -> %s: %s already exists; re-tag subjects and delete %s manually",
+            old,
+            new,
+            new,
+            old,
+        )

@@ -58,6 +58,7 @@ Semantics:
 
 - A missing subject file reads as `labels: []`, `state: open`; it is created on first mutation. No seeding step.
 - `llmaw trigger issues labeled --issue 1 --label X` asserts `X` into state before rules run (a labeled event means the label is present, mirroring GitHub). GitHub state is authoritative there, so the assertion only applies to the local tracker.
+- `llmaw sync-labels` writes the `labels.yml` catalog and applies `migrate_from` ([flows.md](flows.md#declared-labels-and-migration)) by rewriting the old name onto the new one in every subject file.
 - Title, body, branch, and merged are event-time data, never persisted.
 - Add `state_dir` to `.gitignore` if you do not want local runs committed.
 

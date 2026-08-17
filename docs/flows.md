@@ -15,6 +15,7 @@ labels:          # created/updated by the setup-labels workflow
   - name: feature-request
     description: Triaged feature request
     color: 0E8A16
+    migrate_from: [feature]    # optional: rename predecessor label(s) onto this name
 
 flows:           # grouping is organizational; routing is flat across all flows
   feature-request:
@@ -24,6 +25,26 @@ flows:           # grouping is organizational; routing is flat across all flows
         when: { ... }           # event matcher
         run: [ ... ]            # ordered steps
 ```
+
+## Declared labels and migration
+
+The top-level `labels:` block is reconciled with the tracker by the `setup-labels` workflow (`llmaw sync-labels`). Each entry is created if missing, or updated (description/color) if it already exists.
+
+An entry may also carry `migrate_from`: a list (or single string) of predecessor label names to rename onto the current name. How a rename executes depends on the [tracker](trackers.md): on GitHub it runs `gh label edit <old> --name <new>`, and GitHub moves every issue carrying the old label onto the new one, so history is preserved; in local mode the label name is rewritten in every subject state file (and the catalog).
+
+```yaml
+labels:
+  - name: llmaw:create-needs-assessment
+    description: Run create-needs-assessment (draft or revise)
+    color: FBCA04
+    migrate_from:
+      - llmaw:draft-needs-assessment   # old name still on issues
+      - llmaw:start-needs-assessment
+```
+
+- A rename only happens when the new name does not yet exist; a label cannot be renamed onto an existing one. After the rename the normal create/update step keeps description/color in sync.
+- If both the old and new names already exist, the sync reports a conflict and leaves them untouched. Resolve those by re-tagging subjects onto the new label and deleting the old one manually.
+- `migrate_from` is idempotent: once renamed, the old name no longer exists and subsequent runs skip it.
 
 ## `when` matchers
 
@@ -230,4 +251,4 @@ flows:
 - In `continuous` mode that pass repeats in the same job, advancing on each newly-added label until `needs-human` or a resting state (see [Execution modes](#execution-modes)).
 - Zero matches is a no-op; the `Run matched rules` step is skipped.
 - A config error (bad step, unknown kind, rule without steps) fails fast at the route step instead of misrouting.
-- Dry-run any rule manually from the Actions tab via the dispatcher's `rule-id` input.
+- Dry-run any rule manually from the Actions tab via the dispatcher's `rule-id` input, or locally with `llmaw run-rule --rule-id <id> --issue <n>` (see [trackers.md](trackers.md)).

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Create or update the labels declared under ``labels:`` in flows.yml."""
+"""Create, update, and migrate the labels declared under ``labels:``.
+
+Delegates to the configured tracker's :meth:`TrackerClient.sync_labels`, which
+renames any declared predecessor (``migrate_from``) onto the current name (so
+carrying subjects follow automatically) and then creates or updates each label.
+"""
 
 from __future__ import annotations
 

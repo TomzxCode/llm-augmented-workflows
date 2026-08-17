@@ -69,7 +69,7 @@ Set it under `defaults.execution` / `flows.<name>.execution`, force it per-dispa
    - `LLMAW_EXECUTION` - `continuous` or `event-driven` (default resolves from `flows.yml`, ultimately `event-driven`)
    - `LLMAW_MAX_ITERATIONS` - iteration cap for continuous mode (default `30`)
 
-4. Create the labels declared under `labels:` by running the **Setup Labels** workflow, or let your flows add them as needed.
+4. Create the labels declared under `labels:` by running the **Setup Labels** workflow, or let your flows add them as needed. Entries may also declare `migrate_from` to rename predecessor labels onto the new name (carrying issues follow); see [`docs/flows.md`](docs/flows.md#declared-labels-and-migration).
 
 That's it. The default free model needs only the auto-provided `GITHUB_TOKEN`.
 
@@ -150,7 +150,9 @@ See [`docs/flows.md`](docs/flows.md) for the full schema and recipes (triage, cl
   wrappers/
     dispatch.yml        the one file consumers add to their repo
     setup-labels.yml
-  flows.yml             the flow configuration (per repo)
+  llmaw/
+    flows.yml           the flow configuration (per repo)
+    scripts/            ensure-branch.sh, commit-sdlc.sh (resolved from main)
   pr-description-template.md
 src/llm_augmented_workflows/   the engine (installed as the `llmaw` CLI)
   engine.py             loader, matcher, step resolver (pure, unit-tested)
@@ -158,7 +160,7 @@ src/llm_augmented_workflows/   the engine (installed as the `llmaw` CLI)
   run_steps.py          applies labels/shell steps (shared helper)
   apply_outcome.py      maps an agent's verdict to labels/close/comment
   run_rule.py           drives a rule's whole run: pre -> agent -> post -> on_outcome
-  sync_labels.py        creates/updates labels from flows.yml
+  sync_labels.py        creates/updates/migrates labels from flows.yml
   cli.py                `llmaw route | run-rule | run-steps | apply-outcome | sync-labels | trigger`
   trackers/
     base.py             TrackerClient/EventSource ports, SubjectRef, CanonicalEvent
