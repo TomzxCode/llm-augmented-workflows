@@ -1,33 +1,16 @@
 #!/usr/bin/env python3
-"""Create or update repository labels declared under ``labels:`` in flows.yml."""
+"""Create or update the labels declared under ``labels:`` in flows.yml."""
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 
 from .engine import load_flows
+from .trackers import load_tracker
 
 log = logging.getLogger("sync_labels")
-
-
-def sync_label(name: str, description: str, color: str) -> None:
-    """Create a label, or update it if it already exists."""
-    create = subprocess.run(
-        ["gh", "label", "create", name, "--description", description, "--color", color],
-        capture_output=True,
-        text=True,
-    )
-    if create.returncode == 0:
-        log.info("created label %s", name)
-        return
-    subprocess.run(
-        ["gh", "label", "edit", name, "--description", description, "--color", color],
-        check=True,
-    )
-    log.info("updated label %s", name)
 
 
 def main() -> int:
@@ -37,12 +20,12 @@ def main() -> int:
     if not labels:
         log.warning("no labels declared in flows.yml")
         return 0
-    for label in labels:
-        sync_label(
-            name=label["name"],
-            description=label.get("description", ""),
-            color=label.get("color", ""),
-        )
+    try:
+        client = load_tracker(flows)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 1
+    client.sync_labels(labels)
     return 0
 
 

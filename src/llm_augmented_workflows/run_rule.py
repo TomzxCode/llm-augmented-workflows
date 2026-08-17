@@ -3,14 +3,15 @@
 
 For each matched rule, runs its whole ``run`` in this one process:
 pre deterministic (``labels``/``shell``) -> agent (``opencode``) -> post
-deterministic -> ``on_outcome``. Replaces the former per-step GitHub Actions
-steps (run-steps / run-agent / apply-outcome) with one driver command.
+deterministic -> ``on_outcome``. This driver is the local runner: on GitHub
+Actions the dispatcher workflow invokes it per matrix entry, and locally
+``llmaw trigger`` / ``llmaw run-rule`` invoke it directly.
 
 Reads the matched rules from ``MATCHED_FILE`` (a JSON list) or a single rule
-from ``MATCHED_RULE``. GitHub mutations use ``gh`` via ``run_steps``; the agent
-runs via ``opencode`` (installed by the workflow when any rule has an agent).
-``opencode`` and ``gh`` inherit this process's environment, so the workflow
-sets ``GH_TOKEN`` / ``ISSUE_NUMBER`` / ``PR_NUMBER`` / etc. on this step.
+from ``MATCHED_RULE``. Tracker mutations go through the client constructed
+from the ``tracker:`` block in ``flows.yml``. ``opencode`` inherits this
+process's environment, so the dispatcher/trigger sets ``GH_TOKEN`` /
+``ISSUE_NUMBER`` / ``PR_NUMBER`` / etc. before running this command.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 from . import apply_outcome, engine, run_steps
 from .apply_outcome import apply
 from .engine import NEEDS_HUMAN_LABEL, ConfigError
+from .trackers.base import SubjectRef, TrackerClient
 
 log = logging.getLogger("run_rule")
 
@@ -60,6 +62,10 @@ def _resolve_execution() -> str:
     return value if value in engine.EXECUTION_MODES else engine.DEFAULT_EXECUTION
 
 
+def _load_client() -> TrackerClient:
+    return run_steps.build_client()
+
+
 def _load_all_rules() -> list[engine.Rule]:
     """Load the flat rule list from ``flows.yml`` for continuous chaining."""
     flows_path = os.environ.get("FLOWS_FILE", ".github/llmaw/flows.yml")
@@ -73,14 +79,14 @@ def _load_all_rules() -> list[engine.Rule]:
     return engine.flatten_rules(flows_raw, base_model, base_agents_repo)
 
 
-def _fetch_labels(number: int, kind: str) -> list[str]:
-    return run_steps._current_labels(number, kind)
+def _fetch_labels(ref: SubjectRef, client: TrackerClient) -> list[str]:
+    return client.get_labels(ref)
 
 
-def _run_deterministic(steps: list[dict]) -> None:
+def _run_deterministic(steps: list[dict], client: TrackerClient) -> None:
     for step in steps:
         if "labels" in step:
-            run_steps.apply_labels(step)
+            run_steps.apply_labels(step, client)
         elif "shell" in step:
             run_steps.run_shell(step)
         else:
@@ -142,27 +148,27 @@ def _continue_for_outcome(agent: dict, on_outcome: dict) -> None:
         log.warning("outcome continuation exited %s; falling back", result.returncode)
 
 
-def _execute_rule(rule: dict) -> None:
+def _execute_rule(rule: dict, client: TrackerClient) -> None:
     rid = rule.get("id", "?")
     flow = rule.get("flow") or "?"
     with _log_group(f"Rule {rid} ({flow})"):
         log.info("=== rule %s ===", rid)
         if rule.get("has_deterministic"):
-            _run_deterministic(rule.get("deterministic") or [])
+            _run_deterministic(rule.get("deterministic") or [], client)
         if rule.get("has_agent"):
             outcome = os.environ.get("OUTCOME_YAML")
             if outcome:
                 Path(outcome).unlink(missing_ok=True)  # reset per agent
             _run_agent(rule["agent"])
             if rule.get("has_post_deterministic"):
-                _run_deterministic(rule.get("post_deterministic") or [])
+                _run_deterministic(rule.get("post_deterministic") or [], client)
             if rule.get("has_on_outcome") and rule.get("on_outcome"):
                 if os.environ.get("OUTCOME_YAML") and not apply_outcome.outcome_present():
                     _continue_for_outcome(rule["agent"], rule["on_outcome"])
-                apply(rule["on_outcome"], rid)
+                apply(rule["on_outcome"], rid, client)
 
 
-def _run_continuous(seed_rules: list[dict]) -> int:
+def _run_continuous(seed_rules: list[dict], client: TrackerClient) -> int:
     """Run the seed rules, then keep chaining to the next rule based on the
     labels each rule adds, until a terminal condition is reached.
 
@@ -174,15 +180,18 @@ def _run_continuous(seed_rules: list[dict]) -> int:
     any relabel they cause on a linked issue triggers its own dispatch, which
     will itself be continuous.
     """
-    number, kind = run_steps._current_subject()
-    if kind != "issue" or number is None:
+    ref = run_steps.current_subject_ref()
+    if ref is None or ref.kind != "issue":
         for rule in seed_rules:
-            _execute_rule(rule)
-        log.info("continuous: subject is not an issue (%s); ran seed without looping", kind)
+            _execute_rule(rule, client)
+        log.info(
+            "continuous: subject is not an issue (%s); ran seed without looping",
+            ref.kind if ref else "none",
+        )
         return 0
 
     all_rules = _load_all_rules()
-    seen = set(_fetch_labels(number, kind))
+    seen = set(_fetch_labels(ref, client))
     batch = seed_rules
     max_iter = int(os.environ.get("LLMAW_MAX_ITERATIONS", "30"))
 
@@ -193,9 +202,9 @@ def _run_continuous(seed_rules: list[dict]) -> int:
             log.warning("continuous: hit iteration cap (%d); stopping", max_iter)
             break
         for rule in batch:
-            _execute_rule(rule)
+            _execute_rule(rule, client)
 
-        current = set(_fetch_labels(number, kind))
+        current = set(_fetch_labels(ref, client))
         if NEEDS_HUMAN_LABEL in current:
             log.info("continuous: %s present; stopping", NEEDS_HUMAN_LABEL)
             break
@@ -221,12 +230,17 @@ def main() -> int:
     if not rules:
         log.info("no matched rules")
         return 0
+    try:
+        client = _load_client()
+    except (ConfigError, ValueError) as exc:
+        log.error("cannot construct tracker client: %s", exc)
+        return 1
     execution = _resolve_execution()
     log.info("execution mode: %s", execution)
     if execution == "continuous":
-        return _run_continuous(rules)
+        return _run_continuous(rules, client)
     for rule in rules:
-        _execute_rule(rule)
+        _execute_rule(rule, client)
     return 0
 
 

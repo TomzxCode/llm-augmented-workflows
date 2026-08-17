@@ -1,6 +1,6 @@
 # LLM Augmented Workflows
 
-A config-driven automation engine for GitHub, powered by opencode. Describe your flows in one `flows.yml` file; the dispatcher routes GitHub events to the right agent skills (and token-free label/shell steps). No per-flow workflow files, no copied boilerplate.
+A config-driven automation engine for issue trackers, powered by opencode. Describe your flows in one `flows.yml` file; the dispatcher routes events to the right agent skills (and token-free label/shell steps). Run it on GitHub Actions, or entirely locally with the label state in YAML files. No per-flow workflow files, no copied boilerplate.
 
 ## How it works
 
@@ -18,7 +18,7 @@ for each matched rule, run-rule runs its whole `run` in one pass:
 the agent acts on GitHub (relabel, comment, open PR, close) -> emits new events
 ```
 
-State lives in GitHub (labels, PRs, issues). The engine is stateless. Terminal outcomes emerge naturally: an agent closes an issue (won't fix), or a PR merges and an `on-merge` rule closes the linked issue.
+State lives in the tracker (GitHub labels, or per-subject YAML files in local mode). The engine is stateless. Terminal outcomes emerge naturally: an agent closes an issue (won't fix), or a PR merges and an `on-merge` rule closes the linked issue.
 
 ### Execution modes
 
@@ -32,6 +32,7 @@ Set it under `defaults.execution` / `flows.<name>.execution`, force it per-dispa
 ## Features
 
 - **One config file** (`.github/llmaw/flows.yml`) defines every flow as event-matched rules.
+- **Tracker-independent core**: GitHub via `gh` by default, or a local trackerless mode with per-subject YAML state files (see [`docs/trackers.md`](docs/trackers.md)).
 - **Ordered pipeline** per rule: `labels`/`shell` (token-free, before or after the agent), `skill`/`prompt` (opencode agents), and `on_outcome` (routes the agent's verdict to labels/close/comment).
 - **Two execution modes**: `event-driven` (one job per phase) or `continuous` (one job per pipeline, chaining rules until `needs-human`).
 - **Token-free transitions** like relabeling (the `labels` step) cost zero tokens.
@@ -71,6 +72,25 @@ Set it under `defaults.execution` / `flows.<name>.execution`, force it per-dispa
 4. Create the labels declared under `labels:` by running the **Setup Labels** workflow, or let your flows add them as needed.
 
 That's it. The default free model needs only the auto-provided `GITHUB_TOKEN`.
+
+## Run locally (no GitHub)
+
+The same flows can run trackerless, with the label state machine in YAML files under `.llmaw/state/`:
+
+```yaml
+# in flows.yml
+tracker:
+  kind: local
+  state_dir: .llmaw/state
+```
+
+```bash
+llmaw sync-labels                                             # write the label catalog
+llmaw trigger issues labeled --issue 1 --label llmaw:feature-request
+llmaw trigger pull_request closed --pr 2 --merged --branch plan/issue-1   # synthetic merge
+```
+
+Agents run via your local `opencode`; continuous mode chains the whole pipeline in one command. See [`docs/trackers.md`](docs/trackers.md).
 
 ## Versioning
 
@@ -115,6 +135,8 @@ See [`docs/flows.md`](docs/flows.md) for the full schema and recipes (triage, cl
 | `AGENTS_REPOSITORY` | `tomzx/agents` | repository providing skills |
 | `LLMAW_EXECUTION` | `event-driven` | force `continuous` or `event-driven` (else resolved from `flows.yml`) |
 | `LLMAW_MAX_ITERATIONS` | `30` | iteration cap for continuous mode |
+| `LLMAW_TRACKER` | `github` | tracker kind when `flows.yml` has no `tracker.kind` |
+| `flows.yml` `tracker` | - | `kind: github \| local` (+ `state_dir` for local) |
 | `flows.yml` `defaults` | - | per-flow overrides for model/agents-repo/timeout/execution |
 
 ## Project structure
@@ -137,11 +159,15 @@ src/llm_augmented_workflows/   the engine (installed as the `llmaw` CLI)
   apply_outcome.py      maps an agent's verdict to labels/close/comment
   run_rule.py           drives a rule's whole run: pre -> agent -> post -> on_outcome
   sync_labels.py        creates/updates labels from flows.yml
-  cli.py                `llmaw route | run-rule | run-steps | apply-outcome | sync-labels`
-tests/test_engine.py    unit tests
-tests/test_run_rule.py  pipeline-ordering tests
+  cli.py                `llmaw route | run-rule | run-steps | apply-outcome | sync-labels | trigger`
+  trackers/
+    base.py             TrackerClient/EventSource ports, SubjectRef, CanonicalEvent
+    github.py           gh CLI client + GitHub Actions event source
+    local.py            per-subject YAML state client + CLI event source
+tests/                  unit + local end-to-end tests
 examples/               example deterministic shell transitions
 docs/flows.md           authoring guide + recipes
+docs/trackers.md        tracker config + local mode
 pyproject.toml          package + tooling (uv, hatchling, pytest, ruff)
 ```
 

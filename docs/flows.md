@@ -224,7 +224,7 @@ flows:
 
 ## Notes
 
-- The engine is stateless. State lives in GitHub (labels, PRs, issues).
+- The engine is stateless. State lives in the tracker (GitHub labels by default; a local YAML-state mode is available, see [trackers.md](trackers.md)).
 - Tooling is pinned to main. The dispatcher snapshots `.github/llmaw/` (this file + the scripts) from `main` into `$LLMAW_TOOLING_ROOT` before any rule runs, and scripts/`flows.yml` resolve from there. So even though `ensure-branch.sh` switches the working tree to the per-issue branch (so skills edit and commit branch content), the automation that drives the flow always runs from `main` and fixes apply to in-flight issues the moment they land.
 - Each matched rule runs in one pass: pre `labels`/`shell` → agent → post `labels`/`shell` → `on_outcome`.
 - In `continuous` mode that pass repeats in the same job, advancing on each newly-added label until `needs-human` or a resting state (see [Execution modes](#execution-modes)).

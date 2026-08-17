@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Route a GitHub event to the matching rules in ``flows.yml``.
+"""Route an event to the matching rules in ``flows.yml``.
 
-Reads the event from the ``GITHUB_EVENT_NAME`` / ``GITHUB_EVENT_PATH``
-environment variables (provided automatically by GitHub Actions) and writes two
+Reads the event from an :class:`EventSource` (the GitHub Actions runtime by
+default, i.e. ``GITHUB_EVENT_NAME`` / ``GITHUB_EVENT_PATH``) and writes two
 outputs to ``$GITHUB_OUTPUT``:
 
 * ``matched`` - a JSON array of matched rules (one Actions matrix entry each)
@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import sys
-from pathlib import Path
 
 from .engine import (
     ConfigError,
@@ -25,6 +24,7 @@ from .engine import (
     resolve_dispatch_execution,
     rule_to_matrix,
 )
+from .trackers.github import GithubActionsEventSource
 
 log = logging.getLogger("route")
 
@@ -35,14 +35,6 @@ def _write_output(name: str, value: str) -> None:
         with open(output_file, "a") as fh:
             fh.write(f"{name}={value}\n")
     print(f"{name}={value}")
-
-
-def _load_payload() -> dict:
-    path = os.environ.get("GITHUB_EVENT_PATH")
-    if not path or not Path(path).exists():
-        return {}
-    with open(path) as fh:
-        return json.load(fh)
 
 
 def main() -> int:
@@ -60,13 +52,18 @@ def main() -> int:
         log.error("invalid flows config: %s", exc)
         return 1
 
-    if event_name == "workflow_dispatch":
+    source = GithubActionsEventSource()
+    if source.event_name() == "workflow_dispatch":
         # Manual dry-run: emit a single rule by id, no event matching.
         force_id = os.environ.get("FORCE_RULE_ID", "").strip()
         rules = [r for r in all_rules if r.id == force_id] if force_id else []
     else:
-        payload = _load_payload()
-        rules = [r for r in all_rules if matches(r.when, event_name, payload)]
+        event = source.event()
+        if event is None:
+            log.warning("no event available (GITHUB_EVENT_NAME/GITHUB_EVENT_PATH unset)")
+            rules = []
+        else:
+            rules = [r for r in all_rules if matches(r.when, event)]
 
     matrix = [rule_to_matrix(r) for r in rules]
 
@@ -81,7 +78,8 @@ def main() -> int:
     _write_output("execution", execution)
     matched_file = os.environ.get("MATCHED_FILE")
     if matched_file:
-        Path(matched_file).write_text(json.dumps(matrix))
+        with open(matched_file, "w") as fh:
+            fh.write(json.dumps(matrix))
 
     log.info(
         "event=%s execution=%s matched=%s",

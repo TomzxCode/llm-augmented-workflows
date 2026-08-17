@@ -28,6 +28,13 @@ from llm_augmented_workflows.engine import (
     rule_to_matrix,
     split_steps,
 )
+from llm_augmented_workflows.trackers.base import CanonicalEvent, SubjectRef
+
+
+def _event(**kw) -> CanonicalEvent:
+    base = {"event": "issues", "action": "labeled", "subject": SubjectRef("issue", "1")}
+    base.update(kw)
+    return CanonicalEvent(**base)
 
 
 def write_flows(tmp_path, text: str):
@@ -165,45 +172,40 @@ def test_build_agent_prompt_kind():
 # --------------------------------------------------------------------------- #
 def test_matches_event_and_action():
     when = parse_when({"event": "issues", "action": "labeled"})
-    assert matches(when, "issues", {"action": "labeled"})
-    assert not matches(when, "issues", {"action": "opened"})
-    assert not matches(when, "pull_request", {"action": "labeled"})
+    assert matches(when, _event())
+    assert not matches(when, _event(action="opened"))
+    assert not matches(when, _event(event="pull_request"))
 
 
 def test_matches_label():
     when = parse_when({"event": "issues", "action": "labeled", "label": "plan-needed"})
-    assert matches(when, "issues", {"action": "labeled", "label": {"name": "plan-needed"}})
-    assert not matches(when, "issues", {"action": "labeled", "label": {"name": "other"}})
+    assert matches(when, _event(label="plan-needed"))
+    assert not matches(when, _event(label="other"))
 
 
 def test_matches_merged_and_branch_prefix():
     when = parse_when(
         {"event": "pull_request", "action": "closed", "merged": True, "branch_prefix": "plan/"}
     )
-    payload = {
-        "action": "closed",
-        "pull_request": {"merged": True, "head": {"ref": "plan/issue-1"}},
-    }
-    assert matches(when, "pull_request", payload)
-    bad = {"action": "closed", "pull_request": {"merged": False, "head": {"ref": "plan/x"}}}
-    assert not matches(when, "pull_request", bad)
-    other = {"action": "closed", "pull_request": {"merged": True, "head": {"ref": "impl/x"}}}
-    assert not matches(when, "pull_request", other)
+    ok = _event(event="pull_request", action="closed", merged=True, branch="plan/issue-1")
+    assert matches(when, ok)
+    bad_merged = _event(event="pull_request", action="closed", merged=False, branch="plan/x")
+    assert not matches(when, bad_merged)
+    bad_branch = _event(event="pull_request", action="closed", merged=True, branch="impl/x")
+    assert not matches(when, bad_branch)
 
 
 def test_matches_body_contains():
     when = parse_when(
         {"event": "issue_comment", "action": "created", "body_contains": "Plan for issue"}
     )
-    assert matches(
-        when, "issue_comment", {"action": "created", "issue": {"body": "Plan for issue #4"}}
-    )
-    assert not matches(when, "issue_comment", {"action": "created", "issue": {"body": "hello"}})
+    assert matches(when, _event(event="issue_comment", action="created", body="Plan for issue #4"))
+    assert not matches(when, _event(event="issue_comment", action="created", body="hello"))
 
 
 def test_matches_unspecified_fields_are_wildcards():
     when = When()  # match everything
-    assert matches(when, "issues", {"action": "opened"})
+    assert matches(when, _event(action="opened"))
 
 
 # --------------------------------------------------------------------------- #

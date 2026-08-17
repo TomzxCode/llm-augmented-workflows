@@ -1,394 +1,260 @@
-# Design Plan: Generalized LLM-Augmented Workflow Engine
+# Design Plan: Tracker-Independent Workflows
 
 ## Goal
 
-Turn this repository from a single hardcoded flow (issue, plan, implement) into a general engine where any number of flows can be defined declaratively.
+Decouple the engine from GitHub so the same `flows.yml` drives workflows in two settings:
 
-A flow is a graph of event-driven steps. Each step either runs an agent (an opencode skill or prompt) or a deterministic shell/label command. Agents perform state transitions themselves by acting on GitHub (add or remove labels, comment, open or close a PR, close the issue). The framework only routes events to the right agent.
+1. **GitHub Actions** (today's behavior, byte-for-byte unchanged).
+2. **Local, trackerless**: the label state machine lives in per-subject YAML state files, events are emitted from the CLI, agents run via a locally installed `opencode`. No network, no GitHub.
 
-## Current State (post-opencode rebase)
+The I/O is carved behind ports (`TrackerClient`, `EventSource`), so other trackers (GitLab, Linear) remain possible later as additive adapters with no engine changes; building them is explicitly out of scope here.
 
-The repository already runs on opencode, not Claude Code. Each workflow today:
-- Installs opencode with `curl -fsSL https://opencode.ai/install | bash`.
-- Clones a configurable **agents repository** (default `tomzx/agents`) and symlinks its `skills/` into `~/.opencode/skills` and its `AGENTS.md` into `~/.config/opencode/AGENTS.md`.
-- Runs `opencode run --model "$MODEL" --dangerously-skip-permissions --command <skill>`.
-- Resolves `model` (default `opencode/deepseek-v4-flash-free`) and `agents-repository` (default `tomzx/agents`) as workflow input, then repo variable (`OPENCODE_MODEL`, `AGENTS_REPOSITORY`), then hardcoded default.
-- Authenticates with the auto-provided `GITHUB_TOKEN` only. No `ANTHROPIC_*` secrets, no `id-token: write`.
+Compatibility rules:
 
-Files are `plan.yml`, `implement.yml`, `review.yml`, `plan-merged.yml`, `setup-labels.yml` plus matching wrappers that call `TomzxCode/llm-augmented-workflows/.github/workflows/<name>.yml@main`. The local `.agents/commands/*.md` are vestigial: skills now come from the external agents repository. `.claude` and `CLAUDE.md` are symlinks to `.agents` and `AGENTS.md`.
+- Existing `flows.yml` files keep working unchanged.
+- The `when` vocabulary keeps GitHub event names (`issues`, `pull_request`, `labeled`, ...) as the **canonical** terms; other trackers translate into them. No config migration.
+- The GitHub path keeps using `gh` + `GH_TOKEN` exactly as today.
 
-This plan generalizes that base without changing the execution engine.
+## Current Coupling Inventory
 
-## Mental Model
+Where GitHub is hardwired today:
 
+| Concern | Location | Coupling |
+|---|---|---|
+| Event ingestion | `route.py` (`GITHUB_EVENT_PATH` / `GITHUB_EVENT_NAME`) | Actions env contract |
+| Event matching | `engine.matches()` | GitHub payload structure (`label.name`, `pull_request.merged`, `head.ref`) |
+| Label read | `run_steps._current_labels()` | `gh issue view --json labels` |
+| Label write | `run_steps.apply_labels()` | `gh issue edit --add-label/--remove-label` |
+| Comment / close | `apply_outcome._post_comment()` / `_close()` | `gh issue comment/close` |
+| Linked issue | `run_steps._find_linked_issue()` | `closes #N` regex over PR title/body env |
+| Subject identity | `run_steps._current_subject()` | `ISSUE_NUMBER` / `PR_NUMBER` env |
+| Label sync | `sync_labels.sync_label()` | `gh label create/edit` |
+| Continuous fetch | `run_rule._fetch_labels()` | reuses the `gh` label read |
+| Comment footer | `apply_outcome._with_run_link()` | Actions run URL env |
+| Orchestration | `.github/workflows/dispatch.yml` | Actions triggers, matrix, app token |
+
+`engine.py` (load / normalize / split / `find_next_rules` / label diff) is already pure and tracker-free; only `matches()` assumes the GitHub payload structure. The refactor is about carving the I/O out of `run_steps.py`, `apply_outcome.py`, `route.py`, and `sync_labels.py` behind ports.
+
+## Abstractions: Three Ports
+
+### Port 1: `TrackerClient` (state read/write)
+
+One protocol owns every tracker mutation and query. Today these calls are inlined in `run_steps.py` / `apply_outcome.py` / `sync_labels.py`.
+
+```python
+@dataclass(frozen=True)
+class SubjectRef:
+    kind: str   # "issue" | "pull_request" (canonical terms)
+    id: str     # "42"
+
+class TrackerClient(Protocol):
+    name: str
+
+    def get_labels(self, ref: SubjectRef) -> list[str]: ...
+    def add_labels(self, ref: SubjectRef, labels: list[str]) -> None: ...
+    def remove_labels(self, ref: SubjectRef, labels: list[str]) -> None: ...
+    def comment(self, ref: SubjectRef, body: str) -> None: ...
+    def close(self, ref: SubjectRef, comment: str | None) -> None: ...
+    def find_linked_subject(self, ref: SubjectRef) -> SubjectRef | None: ...
+    def sync_labels(self, defs: list[dict]) -> None: ...
 ```
-GitHub event (issue labeled, PR merged, comment, ...)
-   |
-   v
-[dispatcher workflow] reads flows.yml, finds matching rule(s)
-   |
-   v
-for each matched rule: run deterministic steps (labels/shell), then the agent step
-   |
-   v
-agent reads context, does work, performs transitions as side effects
-   |
-   v
-those transitions emit new GitHub events, which re-enter the loop
+
+Labels are the only state the engine ever reads back (label diff, continuous chaining). The agent env contract (`ISSUE_TITLE`, `PR_BODY`, `PR_BRANCH`, ...) is derived from the **event** by the event source, exactly as the Actions dispatcher derives it from the payload today; clients never serve it. `comment`/`close` are writes the engine does not read back.
+
+Adapters (built here):
+
+| Adapter | Implementation notes |
+|---|---|
+| `GithubCliClient` | Wraps `gh`. Literally the code currently inlined in `run_steps.py` / `apply_outcome.py`, extracted. Owns the run-link comment footer. Default everywhere; zero behavior change. |
+| `LocalYamlClient` | Reads/writes the per-subject YAML state files (see [Local mode](#local-mode-trackerless)). |
+
+The protocol is the extension seam: a GitLab (`glab`) or Linear client later is a new module implementing `TrackerClient`, nothing else moves.
+
+Injection: `run_steps.apply_labels(step, client)`, `run_rule._fetch_labels(..., client)`, `apply_outcome.apply(on_outcome, client, ...)`, `sync_labels(client)`. The CLI constructs the client once at startup and threads it through. No module-level singleton; tests pass fakes explicitly (same pattern as the existing `_gh` monkeypatching, one level up).
+
+### Port 2: `EventSource` (ingestion)
+
+`route.py` currently reads `GITHUB_EVENT_*`. Replace with one protocol returning a canonical event:
+
+```python
+class EventSource(Protocol):
+    def event(self) -> CanonicalEvent | None: ...
 ```
 
-Terminal outcomes emerge naturally: an agent closes the issue (will not fix), or a PR is merged and an `on-merge` rule closes the linked issue.
+```python
+@dataclass(frozen=True)
+class CanonicalEvent:
+    event: str            # canonical name, GitHub vocabulary: issues | pull_request | issue_comment | ...
+    action: str | None    # opened | labeled | closed | created | ...
+    subject: SubjectRef
+    label: str | None
+    merged: bool | None
+    branch: str | None
+    body: str | None
+    comment: dict | None  # {author, body, type: general|inline}
+    raw: dict             # original payload for exotic needs
+```
 
-## Flow Configuration
+`engine.matches()` changes signature from `(when, event_name, payload_dict)` to `(when, CanonicalEvent)`. Mechanical change, identical field semantics, same `when` schema. `find_next_rules`, `rule_to_matrix`, and all normalization stay untouched.
 
-Single source of truth: `.github/llmaw/flows.yml`.
+Adapters (built here):
 
-### Schema
+| Adapter | Implementation notes |
+|---|---|
+| `GithubActionsEventSource` | Reads `GITHUB_EVENT_PATH` / `GITHUB_EVENT_NAME`, projects the payload into `CanonicalEvent`. Default. |
+| `CliEventSource` | Builds `CanonicalEvent` from `llmaw trigger` CLI flags (`--title`/`--body`/`--branch`/`--merged`); derives the agent env from them, mirroring the dispatcher. The state files hold only label state. Powers local mode. |
+
+As with the client, other trackers' webhook event sources slot in later behind the same protocol.
+
+### Port 3: `Runner` (pipeline execution)
+
+How a matched rule's pipeline (pre `labels`/`shell` -> agent -> post -> `on_outcome`) is executed:
+
+- **ActionsRunner** (implicit): today's `dispatch.yml` matrix job that invokes `uv run llmaw run-rule` per rule. Stays as-is.
+- **LocalRunner**: `run_rule.main()` **is** the runner already; it is a single Python process driving the whole pipeline. Local mode = same code + `LocalYamlClient` + local `opencode` on PATH. No new abstraction to build, just documentation of this role.
+
+## Config Model
+
+One new optional top-level key in `flows.yml`; everything else unchanged:
 
 ```yaml
-# Optional defaults applied to every agent step unless overridden.
-defaults:
-  model: opencode/deepseek-v4-flash-free   # opencode model id (provider/model)
-  agents_repository: tomzx/agents          # repo providing skills, cloned at runtime
-  timeout_minutes: 30
-  permissions: skip                        # maps to opencode --dangerously-skip-permissions
-
-# Labels the setup-labels workflow will create automatically.
-labels:
-  - name: feature-request
-    description: Triaged feature request
-    color: 0E8A16
-  - name: bug
-    description: Bug report
-    color: D73A4A
-
-# Flows group related rules. Grouping is organizational, it does not affect routing.
-flows:
-  feature-request:
-    description: Triage and deliver feature requests.
-    rules:
-      - id: triage-feature
-        when:
-          event: issues
-          action: labeled
-          label: feature-request
-        run:
-          # Deterministic prep, runs first, costs no tokens.
-          - labels:
-              remove: [feature-request]
-              add: [triaged]
-          # Then the agent runs and decides the next transition itself
-          # (needs-info, ready-to-plan, wontfix + close, etc.).
-
-          - skill: triage-feature-request
-
-      - id: generate-plan
-        when:
-          event: issues
-          action: labeled
-          label: ready-to-plan
-        run:
-          - skill: generate-plan
-
-      - id: respond-to-plan-review
-        when:
-          event: pull_request_review_comment
-          action: created
-          branch_prefix: plan/
-        run:
-          - skill: review-plan-comment
-
-      - id: on-plan-merged
-        when:
-          event: pull_request
-          action: closed
-          merged: true
-          branch_prefix: plan/
-        run:
-          # Pure deterministic relabel, no agent involved.
-          - labels:
-              add: [plan-approved]
-
-      - id: implement
-        when:
-          event: issues
-          action: labeled
-          label: plan-approved
-        run:
-          - skill: implement-plan
-
-      - id: close-on-impl-merged
-        when:
-          event: pull_request
-          action: closed
-          merged: true
-          branch_prefix: impl/
-        run:
-          - shell: examples/close-linked-issue.sh
-
-  bug-fix:
-    description: Triage and fix bugs.
-    rules:
-      - id: triage-bug
-        when:
-          event: issues
-          action: labeled
-          label: bug
-        run:
-          - labels:
-              remove: [bug]
-              add: [needs-triage]
-          - skill: triage-bug
-
-      - id: implement-fix
-        when:
-          event: issues
-          action: labeled
-          label: bug-approved
-        run:
-          - skill: implement-fix
+tracker:
+  kind: github        # github (default) | local
+  # github: no further config (gh + GH_TOKEN as today)
+  # local:
+  state_dir: .llmaw/state
 ```
 
-### Rule fields
+Selection precedence: `flows.yml tracker.kind` > env `LLMAW_TRACKER` > default `github`.
 
-| Field | Meaning |
-|-------|---------|
-| `id` | Unique rule id, used in logs and the matrix. |
-| `when` | Event matcher. All fields are ANDed, unspecified fields are wildcards. |
-| `run` | Ordered list of steps to execute when the rule matches. A single object is treated as a one-element list. |
+A factory `load_tracker(flows_raw, env) -> TrackerClient` in `trackers/__init__.py` constructs the adapter once per CLI invocation.
 
-### `when` matchers
+## Local Mode (Trackerless)
 
-| Field | For events | Meaning |
-|-------|------------|---------|
-| `event` | all | GitHub event name (`issues`, `pull_request`, `issue_comment`, `pull_request_review_comment`). |
-| `action` | all | Event action (`opened`, `labeled`, `closed`, `created`). |
-| `label` | issues, pull_request | Label name that must match on a `labeled` event. |
-| `merged` | pull_request | Require `merged` true or false on a `closed` event. |
-| `branch_prefix` | pull_request | Match the PR head branch by prefix. |
-| `body_contains` | issues, pull_request | Match the body substring (legacy plan PR detection). |
+The headline use case: run the whole label state machine from a YAML file, no GitHub.
 
-### Steps
+### State files (one per subject)
 
-`run` is an ordered list. Each item is one step, discriminated by its key.
+Owned entirely by `LocalYamlClient`. The engine reads exactly one thing from tracker state: labels. A subject file is therefore mostly labels, plus write-only record for later inspection. Files are named `<kind>-<id>.yml` with the kind's underscore as a hyphen (`issue-1.yml`, `pull-request-2.yml`):
 
-| Step key | What it does |
-|----------|--------------|
-| `labels` | Adds and/or removes labels on the issue or PR. Deterministic, no LLM, no tokens. |
-| `shell` | Runs a shell script. Deterministic, no LLM. |
-| `skill` | Runs an opencode command (`opencode run --command <name>`) from the configured agents repository. Costs tokens. |
-| `prompt` | Runs opencode with a local prompt file's contents. Costs tokens. Use for repo-specific logic that is not a shared skill. |
-
-The `labels` step is the easy, token-free way to transition state:
+```
+.llmaw/state/
+  issue-1.yml
+  issue-3.yml
+  pull-request-2.yml     # only needed to carry a `linked:` pointer (see below)
+  labels.yml             # the label catalog, written by llmaw sync-labels
+```
 
 ```yaml
-- labels:
-    add: [ready-to-plan]       # optional, list or single string
-    remove: [feature-request]   # optional, list or single string
-    target: subject             # subject (default) | linked-issue
+# .llmaw/state/issue-1.yml
+labels: [llmaw:feature-request, llmaw:create-needs-assessment]
+state: open            # open | closed; terminal marker, written by `close`, never read for routing
+comments:              # append-only record of outcome feedback, for human inspection
+  - { body: "...", at: 2026-08-17T12:00Z }
 ```
 
-`target: linked-issue` parses `#N` (or `closes|fixes|resolves|plan for issue #N`) from the PR title/body and labels that issue. The orchestrator diffs against the item's current labels, so `add` and `remove` are idempotent and never error on labels that are already present or absent.
+Everything else is event-time data, not state. Title, body, branch, merged, and the trigger label arrive via `llmaw trigger` flags, flow into the `CanonicalEvent` and the agent env (`ISSUE_TITLE`, `PR_BODY`, ...), and are not persisted. This mirrors GitHub, where the dispatcher reads them from the event payload, never from a later API call.
 
-Agent steps accept overrides (`model`, `agents_repository`, `timeout_minutes`, `permissions`) that default to the top-level `defaults`. `permissions: skip` maps to opencode's `--dangerously-skip-permissions`, which is what the current workflows already pass.
+Consequences:
 
-**Execution order.** Steps run sequentially in listed order. Deterministic steps (`labels`, `shell`) run first, in their relative order, via a single orchestrator script. Then the agent step (`skill` or `prompt`) runs via `opencode run`. Transitions that should happen after the agent are performed by the agent itself, this is the agent-driven model. v1 supports one agent step per rule, chain more by emitting a label and matching it with another rule.
-
-## Matching Semantics
-
-- The router flattens all rules across all flows into one list.
-- On an event it evaluates every rule and collects all matches.
-- Matched rules run as a GitHub Actions matrix, one isolated job per rule.
-- Most events match exactly one rule. If several match, they run in parallel.
-- Rule `when` fields are ANDed. Unspecified fields are wildcards.
-
-## Context Variables Contract
-
-The dispatcher exposes context to every agent and shell step as environment variables, mirroring what the current workflows already pass to `opencode run`.
-
-| Variable | Present when | Example |
-|----------|--------------|---------|
-| `REPO` | always | `owner/repo` |
-| `EVENT_NAME` | always | `issues` |
-| `EVENT_ACTION` | always | `labeled` |
-| `ISSUE_NUMBER` | issues, issue comments | `42` |
-| `ISSUE_TITLE` | issues | `Add dark mode` |
-| `ISSUE_BODY` | issues | issue body text |
-| `ISSUE_LABELS` | issues | comma-separated list |
-| `LABEL` | labeled events | the label that was added |
-| `PR_NUMBER` | pull request events | `7` |
-| `PR_BRANCH` | pull request events | `plan/issue-42-...` |
-| `PR_TITLE` | pull request events | `Plan for issue #42` |
-| `PR_MERGED` | pull request closed | `true` |
-| `COMMENT_AUTHOR` | comment events | `octocat` |
-| `COMMENT_BODY` | comment events | comment text |
-| `COMMENT_TYPE` | comment events | `inline` or `general` |
-| `GH_TOKEN` | always | the auto-provided `GITHUB_TOKEN` |
-| `OPENCODE_DISABLE_AUTO_UPDATE` | always | `1` |
-
-Skills read these the same way the current `generate-plan` / `implement-plan` skills read `REPO` and `ISSUE_NUMBER` today.
-
-## Dispatcher Architecture
-
-Two reusable pieces plus one wrapper.
-
-### `.github/workflows/dispatch.yml` (reusable)
-
-- Triggers on the superset of events:
-  - `issues: [opened, labeled, reopened, closed]`
-  - `pull_request: [closed, labeled, ready_for_review]`
-  - `issue_comment: [created]`
-  - `pull_request_review_comment: [created]`
-- Accepts `model`, `agents-repository`, `framework-repository`, and `framework-ref` inputs with the same input, then vars (`OPENCODE_MODEL`, `AGENTS_REPOSITORY`), then default resolution used today.
-- Job `route`:
-  - Checks out the repo (to read `flows.yml`) and the engine repo into `.llmaw/` (by `framework-repository`/`framework-ref`).
-  - Runs `uv run --project .llmaw llmaw route` (Python package, depends on `pyyaml`).
-  - The command loads `.github/llmaw/flows.yml`, evaluates the current event against every rule, and writes a JSON array of matched rules to `$GITHUB_OUTPUT`.
-  - Outputs `matched` (JSON list), `count`.
-- Job `run-rule` (`needs: route`, matrix over `fromJson(needs.route.outputs.matched)`):
-  - Checks out the repo (default branch, shallowly) and the engine repo into `.llmaw/`.
-  - Runs `uv run --project .llmaw llmaw run-steps` to execute all deterministic steps (`labels`, `shell`) in order against the current issue or PR, using `GH_TOKEN`.
-  - If the rule has an agent step:
-    - Installs opencode: `curl -fsSL https://opencode.ai/install | bash`.
-    - Clones the configured `agents_repository` and symlinks `skills/` and `AGENTS.md` into `~/.opencode`, exactly as the current workflows do.
-    - Runs `opencode run --model "$MODEL" --dangerously-skip-permissions --command <skill>` (skill step) or with the local prompt file contents (prompt step), passing the context env vars.
-- Concurrency group per subject (issue or PR id) so overlapping events queue rather than race.
-
-### `llm_augmented_workflows.engine` + `route`
-
-- Loads YAML, flattens rules, matches against `GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH` payload, and GitHub context.
-- Normalizes `run` to a list and validates that each step has exactly one key, deterministic steps precede the agent step, and there is at most one agent step.
-- Pure and side-effect free aside from emitting outputs, so it is easy to unit test.
-- Unit tests live in `tests/test_engine.py` and run in CI.
-
-### `llm_augmented_workflows.run_steps`
-
-- Receives a rule's deterministic steps and the subject (issue or PR number).
-- Applies `labels` steps by diffing against current labels (idempotent), and runs `shell` steps in order.
-- Uses `GH_TOKEN`, no opencode, no tokens. Errors on a shell step fail the job loudly.
-
-## Consumption & Versioning
-
-Each target repo adds exactly one wrapper workflow that calls the central reusable dispatcher by ref. The engine itself never needs to be copied.
+- `trigger issues labeled --issue 1 --label X` **asserts the label into state** (X is added to `labels`) before rules run, mirroring GitHub semantics where a labeled event means the label is present.
+- A missing subject file reads as `labels: []`, `state: open`; it is created on first mutation. No seeding step needed.
+- `find_linked_subject` resolution: a pseudo-MR file may carry an explicit pointer (below); otherwise the same `#N` regex runs over the event's `PR_TITLE`/`PR_BODY` env.
 
 ```yaml
-# .github/workflows/llm-workflows.yml  (the only boilerplate file per repo)
-name: LLM Workflows
-on:
-  issues:
-    types: [opened, labeled, reopened, closed]
-  pull_request:
-    types: [closed, labeled, ready_for_review]
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-concurrency:
-  group: llmaw-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
-jobs:
-  dispatch:
-    uses: TomzxCode/llm-augmented-workflows/.github/workflows/dispatch.yml@<ref>
-    secrets: inherit
+# .llmaw/state/pull-request-2.yml (optional)
+linked: issue-1        # explicit target for labels steps with target: linked-issue
 ```
 
-The `<ref>` controls versioning:
+Why one file per subject rather than one big state file:
 
-| Ref | Meaning | Use when |
-|-----|---------|----------|
-| `@main` | Latest, moving | Experimenting or fast-moving internal orgs. |
-| `@v1` | Latest within a major tag | Recommended default, gets fixes without breaking changes. |
-| `@<full-sha>` | Immutable pin | Supply-chain safety for production repos. |
+- Each file is small and self-contained, natural to inspect or hand-edit while iterating on a flow.
+- Subjects are independent: every read/mutate touches only that subject's file, and writes are atomic per file (temp + rename). Two concurrent local runs on different subjects never clobber each other.
+- The directory listing is the subject registry; there is no central index to keep consistent.
 
-Releases are cut as git tags (`v1`, `v1.2`, `v1.2.3`) plus a moving major tag. The wrapper is identical across repos, so org rollout is a bulk commit of three files into each repo: the wrapper above, `.github/llmaw/flows.yml`, and any local `.agents/commands/*.md` prompt files it references. Skills themselves are not copied, they come from the shared, versioned `agents_repository`. Model and agents-repository config reach the dispatcher through the wrapper inputs or repo/org variables, and the auto-provided `GITHUB_TOKEN` is the only credential needed for the default free model.
+Method mapping:
 
-This keeps the opencode architecture, hosts no service, and avoids the now-deprecated "required workflows" feature entirely.
+| `TrackerClient` method | State-file operation |
+|---|---|
+| `get_labels` | read `labels` in the subject's file (missing file -> `[]`) |
+| `add_labels` / `remove_labels` | mutate that list, atomic rewrite of the subject's file |
+| `comment` | append to `comments` in the subject's file |
+| `close` | set `state: closed` in the subject's file |
+| `find_linked_subject` | `linked:` pointer in the pseudo-MR file, else `#N` over event title/body; returns `None` if the target file does not exist |
+| `sync_labels` | write `labels.yml` |
 
-## Generalizing setup-labels
+### CLI entry points
 
-`.github/workflows/setup-labels.yml` reads the `labels:` block of `.github/llmaw/flows.yml` and creates or updates each label by running `llmaw sync-labels` from the checked-out engine. Users add a label to config and it appears on next run, no more hardcoded list.
+```bash
+# One-time setup: write the label catalog:
+llmaw sync-labels                          # writes .llmaw/state/labels.yml
 
-## File Layout
+# Emit an event (replaces the webhook trigger); `labeled` asserts its label into state:
+llmaw trigger issues labeled --issue 1 --label llmaw:feature-request
+llmaw trigger issues opened  --issue 3 --title "Fix the flaky test"
+llmaw trigger pull_request closed --pr 2 --merged --branch plan/issue-1   # synthetic merge
 
-```
-.github/
-  workflows/
-    dispatch.yml                  # generic reusable dispatcher (replaces plan/implement/review/plan-merged)
-    setup-labels.yml              # reads labels from flows.yml
-    ci.yml                        # lints + tests the package
-  wrappers/
-    dispatch.yml                  # consumer-facing caller (the one file repos copy)
-    setup-labels.yml              # consumer-facing caller
-  flows.yml                       # the flow configuration (per repo)
-  pr-description-template.md      # kept, used by the implement-plan skill
-src/llm_augmented_workflows/      # the engine, installed as the `llmaw` CLI
-  engine.py                       # loader, matcher, step resolver (pure, unit-tested)
-  route.py                        # event to rule matcher (llmaw route)
-  run_steps.py                    # executes a rule's deterministic steps (llmaw run-steps)
-  sync_labels.py                  # creates/updates labels from flows.yml (llmaw sync-labels)
-  cli.py                          # argparse dispatcher
-tests/
-  test_engine.py                  # unit tests for the matcher/engine
-examples/
-  close-linked-issue.sh           # example deterministic transition
-docs/
-  flows.md                        # authoring guide with copy-paste examples
-pyproject.toml                    # package + tooling (hatchling, uv, pytest, ruff)
-.python-version                   # 3.14
-PLAN.md                           # this file
-README.md                         # rewritten around the engine
+# Force-run a rule (replaces the Actions rule-id dry-run):
+llmaw run-rule --rule-id triage-new-issue --issue 1
 ```
 
-The dispatcher checks this repository out into `.llmaw/` on the worker (via `framework-repository` / `framework-ref` inputs, default `TomzxCode/llm-augmented-workflows` / `main`) and runs `uv run --project .llmaw llmaw ...`, so consumers never copy the engine. Skills referenced by `run.skill` (e.g. `generate-plan`, `implement-plan`, `review-plan-comment`) live in the external agents repository (`tomzx/agents` by default).
+`llmaw trigger` = build `CanonicalEvent` -> `route` -> execute matched rules with `LocalYamlClient`. In `continuous` execution the chain advances in-process by re-reading labels from the subject's state file (the existing `_run_continuous` loop, client-threaded). In `event-driven` execution each `trigger` is one pass, mirroring one Actions dispatch. Recommendation for local use: `execution: continuous`, since there is no webhook loop to re-dispatch.
 
-## Migration Mapping (current to new)
+Agent steps run via the local `opencode` on PATH (skills resolved from the locally configured agents directory, no clone needed). Shell steps work unchanged: `ensure-branch.sh` and `commit-sdlc.sh` operate on the local git checkout, and `git fetch origin` already fails gracefully when no remote exists.
 
-| Current file | Becomes |
-|--------------|---------|
-| `plan.yml` | rule `generate-plan` in `feature-request` flow |
-| `review.yml` | rule `respond-to-plan-review` |
-| `plan-merged.yml` (JS label step) | rule `on-plan-merged` with a `labels` step |
-| `implement.yml` | rule `implement` |
-| `plan-merged.yml` (JS branch/title detection) | matcher `branch_prefix: plan/` in the router |
-| `setup-labels.yml` hardcoded labels | `labels:` block in `flows.yml` |
-| Per-workflow `env.TRIGGER_LABEL` / `APPROVAL_LABEL` | `when:` fields per rule |
-| Per-workflow opencode install + agents clone | one shared block in `dispatch.yml` |
-| Per-workflow `opencode run --command <skill>` | the rule's `skill` step, run by the dispatcher |
-| Per-workflow `check-labels` JS | the router's `when` matchers |
-| Vestigial `.agents/commands/*.md` | deleted, skills already come from the agents repo |
+### Merge rules locally
 
-The agents-repository pattern, the model/agents-repository resolution order, and `--dangerously-skip-permissions` all carry over unchanged. Only the per-flow boilerplate collapses into config.
+Rules gated on `merged: true, branch_prefix: plan/` need a merge event. Locally, `llmaw trigger pull_request closed --pr 2 --merged --branch plan/issue-1` constructs it synthetically; the `on-plan-merged` rule then relabels the linked issue's state file. This gives a fully local end-to-end simulation of the whole SDLC chain, including the human sign-off gates (the human runs the merge trigger; there is no merge to perform).
 
-The old `plan.yml`, `implement.yml`, `review.yml`, `plan-merged.yml` workflows and their wrappers are deleted once `dispatch.yml` covers their events.
+## What Stays the Same
 
-## Concurrency and Edge Cases
+- The `when` / `run` / `on_outcome` schema, execution modes, `find_next_rules` chaining, label-diff idempotency.
+- `opencode run` agent invocation (already tracker-agnostic).
+- Shell-step scripts (git-based; they work on GitHub and locally).
+- Skills stay label-agnostic: they emit verdicts; the verdict-to-label mapping lives in `flows.yml`.
+- The GitHub Actions workflows (`dispatch.yml`, wrappers, CI). `GithubCliClient` is the default adapter; nothing changes on the Actions path.
 
-- `concurrency: { group: dispatch-${{ github.event.issue.number || github.event.pull_request.number }}, cancel-in-progress: false }` so a fast relabel loop cannot cancel an in-flight agent run.
-- Zero matches is a normal no-op, the `run-rule` job is skipped via `if: count > 0`.
-- Large repos stay on `fetch-depth: 1`.
-- The router is deterministic and tested, so a config typo fails the route job fast instead of misrouting.
-- `labels` and `shell` steps give cheap, token-free transitions (relabel, close linked issue). Reserve `skill`/`prompt` for work that actually needs the model.
-- Non-free models may require a provider API key, passed through as a repo/org secret that opencode reads from the environment; the default free model needs none.
+## Proposed File Layout
 
-## Implementation Phases
+```
+src/llm_augmented_workflows/
+  engine.py            # matches() takes CanonicalEvent; rest unchanged
+  route.py             # uses EventSource instead of GITHUB_EVENT_* directly
+  run_rule.py          # threads TrackerClient; subject/rule also from CLI flags
+  run_steps.py         # apply_labels(step, client); gh code moves to GithubCliClient
+  apply_outcome.py     # apply(..., client); gh code moves to GithubCliClient
+  sync_labels.py       # uses client.sync_labels()
+  cli.py               # adds `trigger`; client + event-source factory
+  trackers/
+    __init__.py        # load_tracker() factory
+    base.py            # TrackerClient, EventSource protocols; SubjectRef; CanonicalEvent
+    github.py          # GithubCliClient, GithubActionsEventSource
+    local.py           # LocalYamlClient, CliEventSource
+```
 
-1. **Engine package.** Build `src/llm_augmented_workflows/` (`engine`, `route`, `run_steps`, `sync_labels`, `cli`) with full coverage of the matchers (event, action, label, branch_prefix, merged, body_contains), the defaults merge, `run` list normalization, and the `labels` diff logic, plus the `llmaw` console script. Unit tests in `tests/` run in CI.
-2. **Dispatcher workflow.** Add `dispatch.yml` wiring the `route` job to a `run-rule` matrix that calls `run_steps.py` then installs opencode, clones the agents repo, and runs `opencode run`. Verify end to end with a throwaway rule on a test repo or a `workflow_dispatch` dry-run path.
-3. **Migrate the plan flow.** Port the four existing workflows into `flows.yml` rules, using a `labels` step for the deterministic relabel. Keep behavior identical, including model and agents-repository resolution.
-4. **Generalize setup-labels.** Port to read the `labels:` block.
-5. **Add example flows.** Author `triage-feature-request`, `triage-bug`, and `implement-fix` skills in the agents repository as reference flows that show the go/no-go and PR-outcome patterns.
-6. **Docs.** Rewrite `README.md`, add `docs/flows.md` with a recipe cookbook.
-7. **Cleanup.** Delete the old `plan.yml`/`implement.yml`/`review.yml`/`plan-merged.yml` workflows and wrappers, and the vestigial `.agents/commands/*.md`, after parity is confirmed.
+## Migration Path (incremental, no behavior change)
+
+1. **Extract the port + GitHub adapter.** Create `trackers/base.py` and `trackers/github.py`; move the `gh` calls out of `run_steps.py` / `apply_outcome.py` / `sync_labels.py`; thread the client through. All existing tests stay green (they mock `_gh` one level below; port them to fake clients). Zero behavior change.
+2. **Generalize `matches()`** to take `CanonicalEvent`; `GithubActionsEventSource` projects `GITHUB_EVENT_PATH` payloads into it. Engine tests updated mechanically.
+3. **Add `tracker:` config** and the `load_tracker()` factory; GitHub remains the default.
+4. **Add local mode**: `LocalYamlClient`, `CliEventSource`, `llmaw trigger`, `run-rule --issue/--pr/--rule-id`. New tests for the local adapter.
+5. **Docs**: new `docs/trackers.md`; README quickstart gains a local-mode section.
+
+Steps 1-3 are pure refactor guarded by the existing suite. Step 4 delivers the trackerless goal.
+
+## Testing Strategy
+
+- **Refactor safety (steps 1-3)**: existing `test_engine.py`, `test_run_rule.py`, `test_run_steps.py`, `test_apply_outcome.py` keep passing, with mocks lifted from `_gh` to the client protocol.
+- **`trackers/github.py`**: unit tests with monkeypatched `subprocess.run` (port the current `_capture_gh` pattern).
+- **`trackers/local.py`**: unit tests over a `tmp_path` state dir covering every method (including seeding on first reference); green-path test seeding a subject file and asserting label transitions, comment log, close, and `find_linked_subject`.
+- **Green-path end-to-end (local)**: seed a state dir, run a two-rule chain with the agent monkeypatched, assert the subject files relabel and `comments` grow. Continuous mode covered by the existing `_run_continuous` tests, re-run against the local client.
+- `uv run --group dev ruff check src tests` and `uv run --group dev pytest -q` before every commit.
 
 ## Explicitly Out of Scope
 
-- Non-GitHub triggers (Slack, webhooks). The event model is GitHub only for now.
-- A GitHub App / webhook service. Reusable workflows plus ref pinning cover org rollout without hosting.
-- A UI or visual flow editor.
-- Persistent state machine storage. State lives in GitHub (labels, PRs, issues), the framework is stateless.
-- Automatic rollback of agent actions beyond what the agent itself does.
-- Cross-repository flows.
+- GitLab and Linear adapters. The ports exist precisely so these can be added later as standalone modules; nothing here builds them.
+- A resident daemon or `llmaw watch` (file/dir tailing event source). `trigger` + `run-rule` cover the ask; watch can be added later behind the same `EventSource` port.
+- Hosted webhook ingestion (a service that receives webhooks and dispatches). Local CI wiring can come later as another Runner.
+- Renaming the canonical event vocabulary to neutral terms.
+- Cross-tracker flows (one rule run against two trackers).
+- Changes to the GitHub Actions dispatch workflow beyond what the refactor requires (none expected).

@@ -1,8 +1,11 @@
 """Core engine: load flows.yml, match events to rules, resolve steps.
 
-This module is intentionally free of GitHub/HTTP side effects so it can be unit
-tested directly. The CLI entrypoints (``route.py``, ``run_steps.py``,
-``sync_labels.py``) wrap these pure functions.
+This module is intentionally free of tracker I/O so it can be unit tested
+directly. Matching operates on the canonical event
+(:class:`~llm_augmented_workflows.trackers.base.CanonicalEvent`); tracker
+reads/mutations live behind the ``trackers`` adapters. The CLI entrypoints
+(``route.py``, ``run_steps.py``, ``sync_labels.py``) wrap these pure
+functions.
 """
 
 from __future__ import annotations
@@ -10,9 +13,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from .trackers.base import CanonicalEvent
 
 log = logging.getLogger(__name__)
 
@@ -317,30 +323,23 @@ def flatten_rules(
 # --------------------------------------------------------------------------- #
 # Matching
 # --------------------------------------------------------------------------- #
-def matches(when: When, event_name: str, payload: dict[str, Any]) -> bool:
-    """Return True if ``when`` matches the given GitHub event."""
-    if when.event and when.event != event_name:
+def matches(when: When, event: CanonicalEvent) -> bool:
+    """Return True if ``when`` matches the canonical event."""
+    if when.event and when.event != event.event:
         return False
-    if when.action is not None and when.action != payload.get("action"):
+    if when.action is not None and when.action != event.action:
         return False
     if when.label is not None:
-        label_name = (payload.get("label") or {}).get("name")
-        if when.label != label_name:
+        if when.label != event.label:
             return False
     if when.merged is not None:
-        pr = payload.get("pull_request") or {}
-        if bool(pr.get("merged")) != when.merged:
+        if bool(event.merged) != when.merged:
             return False
     if when.branch_prefix:
-        pr = payload.get("pull_request") or {}
-        ref = (pr.get("head") or {}).get("ref") or ""
-        if not str(ref).startswith(when.branch_prefix):
+        if not str(event.branch or "").startswith(when.branch_prefix):
             return False
     if when.body_contains:
-        body = (payload.get("issue") or {}).get("body") or (payload.get("pull_request") or {}).get(
-            "body"
-        )
-        if when.body_contains not in (body or ""):
+        if when.body_contains not in (event.body or ""):
             return False
     return True
 

@@ -4,15 +4,13 @@
 Reads the matched rule from ``MATCHED_RULE`` (the Actions matrix entry JSON) and
 the agent's outcome from ``OUTCOME_YAML`` (a YAML file the skill wrote). Selects
 the action for ``outcome.verdict`` (falling back to the ``_`` default) and
-applies its labels / close / comment to the subject (or linked issue).
+applies its labels / close / comment to the subject (or linked issue) through
+the tracker client.
 
 When posting a comment (standalone or on close), a ``reason`` field in the
 outcome YAML takes precedence over the action's hardcoded ``comment``, so the
-skill's context-specific feedback reaches GitHub instead of a generic string.
-
-GitHub mutations use ``gh`` with ``GH_TOKEN``, the same contract as
-``run_steps.py``. Reuses ``run_steps`` helpers so label/close behavior stays
-consistent.
+skill's context-specific feedback reaches the tracker instead of a generic
+string.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from . import run_steps
+from .trackers.base import TrackerClient
 
 log = logging.getLogger("apply_outcome")
 
@@ -52,37 +51,11 @@ def outcome_present() -> bool:
     return bool(outcome.get("verdict") and outcome.get("reason"))
 
 
-def _run_url() -> str | None:
-    """Actions run URL built from the ``GITHUB_*`` runtime env vars, or ``None``."""
-    server = os.environ.get("GITHUB_SERVER_URL")
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    if server and repo and run_id:
-        return f"{server}/{repo}/actions/runs/{run_id}"
-    return None
-
-
-def _with_run_link(body: str) -> str:
-    """Append a workflow-run footer to a comment body when running in Actions."""
-    url = _run_url()
-    if not url:
-        return body
-    return f"{body}\n\n---\n[Workflow run]({url})"
-
-
-def _post_comment(number: int, kind: str, body: str) -> None:
-    run_steps._gh([kind, "comment", str(number), "--body", _with_run_link(body)])
-
-
-def _close(number: int, kind: str, comment: str | None) -> None:
-    args = [kind, "close", str(number)]
-    if comment:
-        args += ["--comment", _with_run_link(comment)]
-    run_steps._gh(args)
-
-
-def apply(on_outcome: dict, rule_id: str = "") -> int:
+def apply(
+    on_outcome: dict, rule_id: str = "", client: TrackerClient | None = None
+) -> int:
     """Read ``$OUTCOME_YAML`` and apply the matched ``on_outcome`` action."""
+    client = client or run_steps.build_client()
     outcome = _read_outcome()
     verdict = str(outcome.get("verdict") or "unknown")
     cases = on_outcome.get("cases") or {}
@@ -91,11 +64,10 @@ def apply(on_outcome: dict, rule_id: str = "") -> int:
 
     if action is None:
         log.warning("no on_outcome case for verdict '%s' and no default; posting a notice", verdict)
-        number, kind = run_steps._current_subject()
-        if number is not None:
-            _post_comment(
-                number,
-                kind,
+        ref = run_steps.current_subject_ref()
+        if ref is not None:
+            client.comment(
+                ref,
                 f"Skill produced no actionable outcome (`verdict: {verdict}`). Needs review.",
             )
         return 0
@@ -104,10 +76,10 @@ def apply(on_outcome: dict, rule_id: str = "") -> int:
 
     labels = action.get("labels") or {}
     if labels.get("add") or labels.get("remove"):
-        run_steps.apply_labels({"labels": labels})
+        run_steps.apply_labels({"labels": labels}, client)
 
-    number, kind = run_steps._current_subject()
-    if number is None:
+    ref = run_steps.current_subject_ref()
+    if ref is None:
         log.warning("no subject (ISSUE_NUMBER/PR_NUMBER unset); close/comment skipped")
         return 0
 
@@ -118,9 +90,9 @@ def apply(on_outcome: dict, rule_id: str = "") -> int:
     else:
         comment = action.get("comment")
     if action.get("close"):
-        _close(number, kind, comment)
+        client.close(ref, comment)
     elif comment:
-        _post_comment(number, kind, comment)
+        client.comment(ref, comment)
 
     return 0
 

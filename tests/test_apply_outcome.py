@@ -1,19 +1,43 @@
-"""Unit tests for apply_outcome comment posting (run-link footer)."""
+"""Unit tests for apply_outcome (verdict routing, post_reason, notice path)."""
 
 from __future__ import annotations
 
 from llm_augmented_workflows import apply_outcome
+from llm_augmented_workflows.trackers.base import SubjectRef
 
 
-def _capture_gh(monkeypatch):
-    captured: list[list[str]] = []
+class FakeClient:
+    name = "fake"
 
-    def fake_gh(args, *, capture=False):
-        captured.append(args)
-        return ""
+    def __init__(self):
+        self.calls: list[tuple] = []
 
-    monkeypatch.setattr(apply_outcome.run_steps, "_gh", fake_gh)
-    return captured
+    def get_labels(self, ref):
+        return []
+
+    def add_labels(self, ref, labels):
+        self.calls.append(("add_labels", ref, list(labels)))
+
+    def remove_labels(self, ref, labels):
+        self.calls.append(("remove_labels", ref, list(labels)))
+
+    def comment(self, ref, body):
+        self.calls.append(("comment", ref, body))
+
+    def close(self, ref, comment):
+        self.calls.append(("close", ref, comment))
+
+    def find_linked_subject(self, ref):
+        return None
+
+    def sync_labels(self, defs):
+        self.calls.append(("sync_labels", defs))
+
+
+def _client(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(apply_outcome.run_steps, "apply_labels", lambda step, c=None: None)
+    return client
 
 
 def _write_outcome(monkeypatch, tmp_path, data: str):
@@ -23,73 +47,54 @@ def _write_outcome(monkeypatch, tmp_path, data: str):
     return p
 
 
-def _body_of(captured):
-    """Extract the --body value from the first captured gh comment call."""
-    args = captured[0]
-    return args[args.index("--body") + 1]
+def _body_of(client):
+    """Extract the body from the first recorded comment call."""
+    return next(call[2] for call in client.calls if call[0] == "comment")
 
 
-def _comment_of(captured):
-    """Extract the --comment value from the first captured gh close call."""
-    args = captured[0]
-    return args[args.index("--comment") + 1]
+def _comment_of(client):
+    """Extract the comment from the first recorded close call."""
+    return next(call[2] for call in client.calls if call[0] == "close")
 
 
-def test_post_comment_appends_run_link(monkeypatch):
-    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
-    captured = _capture_gh(monkeypatch)
+def _comment_calls(client):
+    return [call for call in client.calls if call[0] in ("comment", "close")]
 
-    apply_outcome._post_comment(9, "issue", "hello")
 
-    assert captured == [
-        [
-            "issue",
-            "comment",
-            "9",
-            "--body",
-            "hello\n\n---\n[Workflow run](https://github.com/owner/repo/actions/runs/12345)",
-        ]
+# --------------------------------------------------------------------------- #
+# close / comment routing
+# --------------------------------------------------------------------------- #
+def test_close_with_comment(monkeypatch, tmp_path):
+    monkeypatch.setenv("ISSUE_NUMBER", "42")
+    _write_outcome(monkeypatch, tmp_path, "verdict: rejected\nreason: r\n")
+    client = _client(monkeypatch)
+
+    apply_outcome.apply(
+        {
+            "cases": {
+                "rejected": {"close": True, "comment": "Closing as wontfix."},
+            },
+            "default": None,
+        },
+        client=client,
+    )
+
+    assert client.calls == [
+        ("close", SubjectRef("issue", "42"), "Closing as wontfix.")
     ]
 
 
-def test_post_comment_omits_link_without_run_env(monkeypatch):
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
-    captured = _capture_gh(monkeypatch)
+def test_close_without_comment_posts_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("ISSUE_NUMBER", "42")
+    _write_outcome(monkeypatch, tmp_path, "verdict: rejected\nreason: r\n")
+    client = _client(monkeypatch)
 
-    apply_outcome._post_comment(9, "issue", "hello")
+    apply_outcome.apply(
+        {"cases": {"rejected": {"close": True}}, "default": None},
+        client=client,
+    )
 
-    assert captured == [["issue", "comment", "9", "--body", "hello"]]
-
-
-def test_close_with_comment_appends_run_link(monkeypatch):
-    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("GITHUB_RUN_ID", "77")
-    captured = _capture_gh(monkeypatch)
-
-    apply_outcome._close(3, "issue", "done")
-
-    assert captured == [
-        [
-            "issue",
-            "close",
-            "3",
-            "--comment",
-            "done\n\n---\n[Workflow run](https://github.com/owner/repo/actions/runs/77)",
-        ]
-    ]
-
-
-def test_close_without_comment_posts_nothing(monkeypatch):
-    monkeypatch.setenv("GITHUB_RUN_ID", "77")
-    captured = _capture_gh(monkeypatch)
-
-    apply_outcome._close(3, "issue", None)
-
-    assert captured == [["issue", "close", "3"]]
+    assert client.calls == [("close", SubjectRef("issue", "42"), None)]
 
 
 # --------------------------------------------------------------------------- #
@@ -98,15 +103,13 @@ def test_close_without_comment_posts_nothing(monkeypatch):
 
 
 def test_post_reason_uses_outcome_reason_for_close(monkeypatch, tmp_path):
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(
         monkeypatch,
         tmp_path,
         "verdict: rejected\nreason: The request is out of scope for v2.\n",
     )
-    captured = _capture_gh(monkeypatch)
+    client = _client(monkeypatch)
 
     apply_outcome.apply(
         {
@@ -114,18 +117,17 @@ def test_post_reason_uses_outcome_reason_for_close(monkeypatch, tmp_path):
                 "rejected": {"close": True, "comment": "Closing as wontfix.", "post_reason": True},
             },
             "default": None,
-        }
+        },
+        client=client,
     )
 
-    assert _comment_of(captured) == "The request is out of scope for v2."
+    assert _comment_of(client) == "The request is out of scope for v2."
 
 
 def test_post_reason_falls_back_to_action_comment(monkeypatch, tmp_path):
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(monkeypatch, tmp_path, "verdict: rejected\nreason: ''\n")
-    captured = _capture_gh(monkeypatch)
+    client = _client(monkeypatch)
 
     apply_outcome.apply(
         {
@@ -133,22 +135,21 @@ def test_post_reason_falls_back_to_action_comment(monkeypatch, tmp_path):
                 "rejected": {"close": True, "comment": "Closing as wontfix.", "post_reason": True},
             },
             "default": None,
-        }
+        },
+        client=client,
     )
 
-    assert _comment_of(captured) == "Closing as wontfix."
+    assert _comment_of(client) == "Closing as wontfix."
 
 
 def test_post_reason_uses_outcome_reason_for_standalone(monkeypatch, tmp_path):
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(
         monkeypatch,
         tmp_path,
         "verdict: needs-info\nreason: Please clarify the target platform.\n",
     )
-    captured = _capture_gh(monkeypatch)
+    client = _client(monkeypatch)
 
     apply_outcome.apply(
         {
@@ -156,24 +157,24 @@ def test_post_reason_uses_outcome_reason_for_standalone(monkeypatch, tmp_path):
                 "needs-info": {"comment": "Need more information.", "post_reason": True},
             },
             "default": None,
-        }
+        },
+        client=client,
     )
 
-    assert captured[0][:3] == ["issue", "comment", "42"]
-    assert _body_of(captured) == "Please clarify the target platform."
+    assert client.calls[0][0] == "comment"
+    assert client.calls[0][1] == SubjectRef("issue", "42")
+    assert _body_of(client) == "Please clarify the target platform."
 
 
 def test_without_post_reason_ignores_outcome_reason(monkeypatch, tmp_path):
     """An action without post_reason posts its hardcoded comment, not the reason."""
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(
         monkeypatch,
         tmp_path,
         "verdict: needs-info\nreason: Please clarify the target platform.\n",
     )
-    captured = _capture_gh(monkeypatch)
+    client = _client(monkeypatch)
 
     apply_outcome.apply(
         {
@@ -181,25 +182,22 @@ def test_without_post_reason_ignores_outcome_reason(monkeypatch, tmp_path):
                 "needs-info": {"comment": "Need more information."},
             },
             "default": None,
-        }
+        },
+        client=client,
     )
 
-    assert _body_of(captured) == "Need more information."
+    assert _body_of(client) == "Need more information."
 
 
 def test_label_only_action_stays_silent_with_reason_present(monkeypatch, tmp_path):
     """A label-only action (no comment, no post_reason) posts nothing."""
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(
         monkeypatch,
         tmp_path,
         "verdict: approved\nreason: Everything looks good.\n",
     )
-    captured = _capture_gh(monkeypatch)
-    # swallow label edits so captured only holds comment/close calls
-    monkeypatch.setattr(apply_outcome.run_steps, "apply_labels", lambda step: None)
+    client = _client(monkeypatch)
 
     apply_outcome.apply(
         {
@@ -207,10 +205,55 @@ def test_label_only_action_stays_silent_with_reason_present(monkeypatch, tmp_pat
                 "approved": {"labels": {"add": ["llmaw:approved"]}},
             },
             "default": None,
-        }
+        },
+        client=client,
     )
 
-    assert captured == []
+    assert _comment_calls(client) == []
+
+
+def test_no_case_and_no_default_posts_notice(monkeypatch, tmp_path):
+    monkeypatch.setenv("ISSUE_NUMBER", "42")
+    _write_outcome(monkeypatch, tmp_path, "verdict: approved\nreason: r\n")
+    client = _client(monkeypatch)
+
+    apply_outcome.apply(
+        {"cases": {"rejected": {"close": True}}, "default": None},
+        client=client,
+    )
+
+    assert len(_comment_calls(client)) == 1
+    assert "verdict: approved" in _body_of(client)
+
+
+def test_default_case_used_when_verdict_unmatched(monkeypatch, tmp_path):
+    monkeypatch.setenv("ISSUE_NUMBER", "42")
+    _write_outcome(monkeypatch, tmp_path, "verdict: unknown\nreason: r\n")
+    client = _client(monkeypatch)
+
+    apply_outcome.apply(
+        {"cases": {"rejected": {"close": True}}, "default": {"comment": "fallback"}},
+        client=client,
+    )
+
+    assert _body_of(client) == "fallback"
+
+
+def test_without_subject_close_comment_skipped(monkeypatch, tmp_path):
+    monkeypatch.delenv("ISSUE_NUMBER", raising=False)
+    monkeypatch.delenv("PR_NUMBER", raising=False)
+    _write_outcome(monkeypatch, tmp_path, "verdict: rejected\nreason: r\n")
+    client = _client(monkeypatch)
+
+    apply_outcome.apply(
+        {
+            "cases": {"rejected": {"close": True, "comment": "bye"}},
+            "default": None,
+        },
+        client=client,
+    )
+
+    assert client.calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -251,16 +294,13 @@ def test_post_reason_survives_normalize_to_apply(monkeypatch, tmp_path):
     a pre-built dict. Previously normalize_action dropped ``post_reason``, so
     the hardcoded comment was posted and the reason discarded.
     """
-    for var in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ISSUE_NUMBER", "42")
     _write_outcome(
         monkeypatch,
         tmp_path,
         "verdict: changes-requested\nreason: Missing rollback strategy.\n",
     )
-    captured = _capture_gh(monkeypatch)
-    monkeypatch.setattr(apply_outcome.run_steps, "apply_labels", lambda step: None)
+    client = _client(monkeypatch)
 
     from llm_augmented_workflows.engine import normalize_on_outcome
 
@@ -276,6 +316,6 @@ def test_post_reason_survives_normalize_to_apply(monkeypatch, tmp_path):
         }
     )
 
-    apply_outcome.apply(on_outcome)
+    apply_outcome.apply(on_outcome, client=client)
 
-    assert _body_of(captured) == "Missing rollback strategy."
+    assert _body_of(client) == "Missing rollback strategy."
