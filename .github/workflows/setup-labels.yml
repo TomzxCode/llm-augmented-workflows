@@ -50,7 +50,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           working-directory: .llmaw
 
